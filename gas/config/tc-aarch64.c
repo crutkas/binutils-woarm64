@@ -2189,6 +2189,27 @@ s_ltorg (int ignored ATTRIBUTE_UNUSED)
 }
 
 #if defined(OBJ_ELF) || defined(OBJ_COFF)
+
+#if defined OBJ_COFF
+
+bool
+aarch64_fix_adjustable (fixS * fixP)
+{
+  symbolS* sym = fixP->fx_addsy;
+  if (!sym)
+    return true;
+
+  if (S_GET_STORAGE_CLASS (sym) == C_STAT)
+    return false;
+
+  if (symbol_get_bfdsym (sym)->section->flags & (SEC_DATA | SEC_READONLY))
+    return false;
+
+  return true;
+}
+
+#endif
+
 /* Forward declarations for functions below, in the MD interface
    section.  */
 static struct reloc_table_entry * find_reloc_table_entry (char **);
