@@ -250,7 +250,12 @@ extern void aarch64_after_parse_args (void);
 #define md_after_parse_args() aarch64_after_parse_args ()
 
 # define EXTERN_FORCE_RELOC 			1
+
+#if defined OBJ_COFF
+# define tc_fix_adjustable(FIX) aarch64_fix_adjustable (FIX)
+#else
 # define tc_fix_adjustable(FIX) 		1
+#endif
 
 /* Values passed to md_apply_fix don't include the symbol value.  */
 # define MD_APPLY_SYM_VALUE(FIX) 		0
