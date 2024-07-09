@@ -250,7 +250,12 @@ extern void aarch64_after_parse_args (void);
 #define md_after_parse_args() aarch64_after_parse_args ()
 
 # define EXTERN_FORCE_RELOC 			1
+
+#if defined OBJ_COFF
+# define tc_fix_adjustable(FIX) aarch64_fix_adjustable (FIX)
+#else
 # define tc_fix_adjustable(FIX) 		1
+#endif
 
 /* Values passed to md_apply_fix don't include the symbol value.  */
 # define MD_APPLY_SYM_VALUE(FIX) 		0
@@ -332,6 +337,7 @@ extern void aarch64elf_frob_symbol (symbolS *, int *);
 extern void cons_fix_new_aarch64 (fragS *, int, int, expressionS *);
 extern void aarch64_init_frag (struct frag *, int);
 extern void aarch64_handle_align (struct frag *);
+extern bool aarch64_fix_adjustable (struct fix *);
 extern int tc_aarch64_regname_to_dw2regnum (char *regname);
 extern void tc_aarch64_frame_initial_instructions (void);
 
