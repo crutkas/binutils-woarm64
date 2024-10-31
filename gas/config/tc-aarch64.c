@@ -10137,7 +10137,7 @@ aarch64elf_frob_symbol (symbolS * symp, int *puntp)
 const char *
 coff_aarch64_target_format (void)
 {
-  return "pe-aarch64-little";
+  return "pe-aarch64-bigobj";
 }
 #endif
 
