@@ -2,7 +2,7 @@
 #objdump: -h
 #name: PE big obj
 
-.*: *file format pe-bigobj-.*
+.*: *file format (pe-bigobj-.*|pe-aarch64-bigobj)
 
 Sections:
 #...
