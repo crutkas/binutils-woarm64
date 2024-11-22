@@ -69,6 +69,7 @@ fragment <<EOF
 EOF
 
 case ${target} in
+  aarch64-*-mingw* | aarch64-*-pe* | aarch64-*-cygwin | \
   x86_64-*-mingw* | x86_64-*-pe | x86_64-*-pep | x86_64-*-cygwin | \
   i[3-7]86-*-mingw32* | i[3-7]86-*-cygwin* | i[3-7]86-*-winnt | i[3-7]86-*-pe)
 fragment <<EOF
@@ -126,9 +127,8 @@ fragment <<EOF
 #define DEFAULT_PSEUDO_RELOC_VERSION 1
 #endif
 
-#define DEFAULT_DLL_CHARACTERISTICS	(${cygwin_behavior} ? 0 : \
-					   IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE \
-					 | IMAGE_DLL_CHARACTERISTICS_NX_COMPAT)
+#define DEFAULT_DLL_CHARACTERISTICS	(   IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE \
+					  | IMAGE_DLL_CHARACTERISTICS_NX_COMPAT)
 
 #if defined(TARGET_IS_i386pe) || ! defined(DLL_SUPPORT)
 #define	PE_DEF_SUBSYSTEM		IMAGE_SUBSYSTEM_WINDOWS_CUI

@@ -915,6 +915,9 @@ EOF
     i*:UWIN*:*)
 	echo "$UNAME_MACHINE"-pc-uwin
 	exit ;;
+    aarch64:CYGWIN*:*:*)
+	echo aarch64-pc-cygwin
+	;;
     amd64:CYGWIN*:*:* | x86_64:CYGWIN*:*:*)
 	echo x86_64-pc-cygwin
 	exit ;;
