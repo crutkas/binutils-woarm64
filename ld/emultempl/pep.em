@@ -7,9 +7,13 @@ else
 fi
 
 case ${target} in
+  aarch64-*-cygwin*)
+    move_default_addr_high=1
+    mingw_behavior=0;
+    ;;
   *-*-cygwin*)
     move_default_addr_high=1
-    mingw_behavior=0
+    mingw_behavior=1
     ;;
   *-*-mingw*)
     move_default_addr_high=0

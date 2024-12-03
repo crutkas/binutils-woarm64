@@ -7,6 +7,12 @@ else
 fi
 
 case ${target} in
+  aarch64-*-cygwin*)
+    mingw_behavior=0;
+    ;;
+  *-*-cygwin*)
+    mingw_behavior=1
+    ;;
   *-*-mingw*)
     mingw_behavior=1
     ;;
