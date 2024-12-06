@@ -199,7 +199,6 @@ seh_get_target_kind (void)
 
   switch (bfd_get_arch (stdoutput))
     {
-    case bfd_arch_aarch64:
     case bfd_arch_arm:
     case bfd_arch_powerpc:
     case bfd_arch_sh:
@@ -222,6 +221,8 @@ seh_get_target_kind (void)
       /* Should return seh_kind_x64.  But not implemented yet.  */
       return seh_kind_unknown;
 
+    case bfd_arch_aarch64:
+      return seh_kind_arm64;
     default:
       break;
     }
@@ -268,6 +269,33 @@ verify_context_and_target (const char *directive, seh_kind target)
       return 0;
     }
   return verify_context (directive);
+}
+
+/* Provide support for mulitple targets.  */
+static int
+verify_context_and_targets (const char *directive, const seh_kind targets[], int count_targets)
+{
+  bool match = false;
+
+  for (int i=0; i < count_targets; i++)
+  {
+    if (seh_get_target_kind() == targets[i])
+    {
+      match = true;
+      break;
+    }
+  }
+
+  if (match == false)
+  {
+    as_warn (_("%s ignored for this target"), directive);
+    ignore_rest_of_line ();
+    return 0;
+  }
+  else
+  {
+    return verify_context (directive);
+  }
 }
 
 /* Skip whitespace and a comma.  Error if the comma is not seen.  */
@@ -362,6 +390,9 @@ obj_coff_seh_handler (int what ATTRIBUTE_UNUSED)
   else
     expression (&seh_ctx_cur->handler);
 
+  if (seh_get_target_kind () == seh_kind_arm64)
+    seh_ctx_cur->arm64_ctx.xdata_header.x = 1;
+
   seh_ctx_cur->handler_data.X_op = O_constant;
   seh_ctx_cur->handler_data.X_add_number = 0;
   seh_ctx_cur->handler_flags = 0;
@@ -369,7 +400,8 @@ obj_coff_seh_handler (int what ATTRIBUTE_UNUSED)
   if (!skip_whitespace_and_comma (0))
     return;
 
-  if (seh_get_target_kind () == seh_kind_x64)
+  if ((seh_get_target_kind () == seh_kind_x64) ||
+      (seh_get_target_kind () == seh_kind_arm64))
     {
       do
 	{
@@ -401,12 +433,28 @@ obj_coff_seh_handler (int what ATTRIBUTE_UNUSED)
 static void
 obj_coff_seh_handlerdata (int what ATTRIBUTE_UNUSED)
 {
-  if (!verify_context_and_target (".seh_handlerdata", seh_kind_x64))
+  const seh_kind targets[] = { seh_kind_x64, seh_kind_arm64 };
+  if (!verify_context_and_targets (".seh_handlerdata", targets, sizeof(targets) / sizeof(seh_kind)))
     return;
   demand_empty_rest_of_line ();
 
   switch_xdata (seh_ctx_cur->subsection + 1, seh_ctx_cur->code_seg);
 }
+
+/* Obtain available unwind element.  */
+
+static inline seh_arm64_unwind_code*
+seh_arm64_get_unwind_element (void)
+{
+  if (seh_ctx_cur == NULL)
+    return NULL;
+  
+  if (seh_ctx_cur->arm64_ctx.unwind_codes_count >= MAX_UNWIND_CODES)
+    return NULL;
+
+  return &seh_ctx_cur->arm64_ctx.unwind_codes[seh_ctx_cur->arm64_ctx.unwind_codes_count++];
+}
+
 
 /* Mark end of current context.  */
 
@@ -442,6 +490,7 @@ obj_coff_seh_proc (int what ATTRIBUTE_UNUSED)
 {
   char *symbol_name;
   char name_end;
+  seh_kind kind;
 
   if (!verify_target (".seh_proc"))
     return;
@@ -462,11 +511,17 @@ obj_coff_seh_proc (int what ATTRIBUTE_UNUSED)
 
   seh_ctx_cur->code_seg = now_seg;
 
-  if (seh_get_target_kind () == seh_kind_x64)
+  if ((kind = seh_get_target_kind ()) == seh_kind_x64 || (kind = seh_get_target_kind ()) == seh_kind_arm64)
     {
       x_segcur = seh_hash_find_or_make (seh_ctx_cur->code_seg, ".xdata");
       seh_ctx_cur->subsection = x_segcur->subseg;
       x_segcur->subseg += 2;
+
+      if (kind == seh_kind_arm64)
+      {
+        seh_ctx_cur->arm64_ctx.unwind_codes_count = 0;
+        seh_ctx_cur->arm64_ctx.epilogue_scopes_count = 0;
+      }      
     }
 
   SKIP_WHITESPACE ();
@@ -495,6 +550,32 @@ obj_coff_seh_endprologue (int what ATTRIBUTE_UNUSED)
     as_warn (_("duplicate .seh_endprologue in .seh_proc block"));
   else
     seh_ctx_cur->endprologue_addr = symbol_temp_new_now ();
+
+  if (seh_get_target_kind () == seh_kind_arm64)
+  {
+    int n = seh_ctx_cur->arm64_ctx.unwind_codes_count;
+    
+    /* unwind codes need to be reversed */
+    for(int i = 0; i < n / 2; ++i)
+    {
+      seh_arm64_unwind_code temp = seh_ctx_cur->arm64_ctx.unwind_codes[i];
+      seh_ctx_cur->arm64_ctx.unwind_codes[i] = seh_ctx_cur->arm64_ctx.unwind_codes[n-i-1];
+      seh_ctx_cur->arm64_ctx.unwind_codes[n-i-1] = temp;
+    }
+
+    /* End code */
+    seh_arm64_unwind_code *end_element = seh_arm64_get_unwind_element ();
+
+    if (end_element == NULL)
+    {
+      as_warn (_("no unwind element available."));
+      return;
+    }
+
+    end_element->end.code = ARM64_UNW_END;
+    end_element->type = end;
+    seh_ctx_cur->arm64_ctx.unwind_codes_byte_count++;
+  } 
 }
 
 /* End-of-file hook.  */
@@ -685,37 +766,87 @@ obj_coff_seh_save (int what)
 static void
 obj_coff_seh_stackalloc (int what ATTRIBUTE_UNUSED)
 {
+  const seh_kind targets[] = { seh_kind_x64, seh_kind_arm64 };
   offsetT off;
   int code, info;
+  seh_arm64_unwind_code *arm64_element = NULL;
 
-  if (!verify_context_and_target (".seh_stackalloc", seh_kind_x64)
+  if (!verify_context_and_targets (".seh_stackalloc", targets, sizeof(targets) / sizeof(seh_kind))
       || !seh_validate_seg (".seh_stackalloc"))
     return;
 
   off = get_absolute_expression ();
   demand_empty_rest_of_line ();
 
-  if (off == 0)
-    return;
-  if (off < 0)
-    {
-      as_bad (_(".seh_stackalloc offset is negative"));
-      return;
-    }
+  switch (seh_get_target_kind ())
+  {
+    case seh_kind_x64:
+      if (off == 0)
+        return;
+      if (off < 0)
+      {
+        as_bad (_(".seh_stackalloc offset is negative"));
+        return;
+      }
 
-  if ((off & 7) == 0 && off <= 128)
-    code = UWOP_ALLOC_SMALL, info = (off - 8) >> 3, off = 0;
-  else if ((off & 7) == 0 && off <= (offsetT) (0xffff * 8))
-    code = UWOP_ALLOC_LARGE, info = 0, off >>= 3;
-  else if (off <= (offsetT) 0xffffffff)
-    code = UWOP_ALLOC_LARGE, info = 1;
-  else
-    {
-      as_bad (_(".seh_stackalloc offset out of range"));
-      return;
-    }
+      if ((off & 7) == 0 && off <= 128)
+        code = UWOP_ALLOC_SMALL, info = (off - 8) >> 3, off = 0;
+      else if ((off & 7) == 0 && off <= (offsetT) (0xffff * 8))
+        code = UWOP_ALLOC_LARGE, info = 0, off >>= 3;
+      else if (off <= (offsetT) 0xffffffff)
+        code = UWOP_ALLOC_LARGE, info = 1;
+      else
+      {
+        as_bad (_(".seh_stackalloc offset out of range"));
+        return;
+      }     
 
-  seh_x64_make_prologue_element (code, info, off);
+      seh_x64_make_prologue_element (code, info, off);
+      break;
+    case seh_kind_arm64:
+      if ((arm64_element = seh_arm64_get_unwind_element ()) == NULL)
+      {
+        as_warn (_("no unwind element available."));
+        return;
+      }
+
+      /* arm64 offset should be encoded in multiples of sixteen   */
+      if ((off & 0xf) != 0)
+      {
+        as_bad (_(".seh_stackalloc offset < 16-byte stack alignment"));
+	return;
+      }
+      else if (off < 0x200)
+      {        
+        arm64_element->alloc_s.offset = off / 16;
+	arm64_element->alloc_s.code = ARM64_UNW_ALLOCS;
+	arm64_element->type = alloc_s;
+	seh_ctx_cur->arm64_ctx.unwind_codes_byte_count++;
+      }
+      else if (off < 0x8000)
+      {
+        arm64_element->alloc_m.offset = off / 16;
+	arm64_element->alloc_m.code = ARM64_UNW_ALLOCM;
+	arm64_element->type = alloc_m;
+	seh_ctx_cur->arm64_ctx.unwind_codes_byte_count += 2;
+      }
+      else if (off < 0x10000000)
+      {
+        arm64_element->alloc_l.offset = off / 16;
+	arm64_element->alloc_l.code = ARM64_UNW_ALLOCL;
+	arm64_element->type = alloc_l;
+	seh_ctx_cur->arm64_ctx.unwind_codes_byte_count += 4;
+      }
+      else
+      {
+        as_bad (_(".seh_stackalloc offset out of range"));
+	return;
+      }
+      break;
+    default:
+      as_bad (_(".seh_stackalloc invalid target"));
+      return;
+  }
 }
 
 /* Add a frame-pointer token to current context.  */
@@ -778,6 +909,13 @@ out_four (int data)
   md_number_to_chars (frag_more (4), data, 4);
 }
 
+static inline void
+out_ptr (const void *data, int size)
+{
+  valueT *value = (valueT*)data;
+  md_number_to_chars (frag_more (size), *value, size);
+}
+
 /* Write out prologue data for x64.  */
 
 static void
@@ -831,6 +969,92 @@ seh_x64_write_prologue_data (const seh_context *c)
 	  abort ();
 	}
     }
+}
+
+static unsigned int
+seh_arm64_unwind_codes_len (const seh_context *c, int index)
+{
+  const seh_arm64_unwind_code *code = &c->arm64_ctx.unwind_codes[index];
+  unsigned int byte_count = 0;
+
+  switch (code->type)
+  {
+    case alloc_l:
+      byte_count = 4;
+      break;
+    case alloc_m:
+    case add_fp:
+    case save_reg:
+    case save_reg_x:
+    case save_regp:
+    case save_regp_x:
+    case save_fregp:
+    case save_fregp_x:
+    case save_freg:
+    case save_freg_x:
+    case save_lrpair:
+      byte_count = 2;
+      break;
+    case alloc_s:
+    case save_fplr:
+    case save_fplr_x:
+    case nop:
+    case pac_sign_lr:
+    case set_fp:
+    case save_next:
+    case save_r19r20_x:
+    case end:
+    case end_c:
+      byte_count = 1;
+      break;
+    default:
+      as_bad(_("unwind code not implemented"));
+      break;
+  }
+
+  return byte_count;
+}
+
+static void
+seh_arm64_emit_unwind_codes (const seh_context *c)
+{  
+  unsigned int total_byte_count = 0;
+  int i;
+
+  for (i = 0; i < (int)c->arm64_ctx.epilogue_scopes_count; i++)
+  {
+    out_ptr (seh_ctx_cur->arm64_ctx.epilogue_scopes + i, 4);
+  }
+  
+  for (i = 0; i < (int)c->arm64_ctx.unwind_codes_count; i++)
+  {
+    const seh_arm64_unwind_code *code = c->arm64_ctx.unwind_codes + i;
+    int byte_count = seh_arm64_unwind_codes_len (c, i);
+    unsigned char *byte_array = (unsigned char*)code;
+
+    /*  emit unwind code bytes in big endian   */
+    for (int j = byte_count-1; j >= 0; --j)
+      out_one (byte_array[j]);
+
+    total_byte_count += byte_count;
+  }
+
+  /* handle word alignment   */
+  switch (total_byte_count % 4)
+  {
+    case 3:
+      out_one (0);
+      /* fall through   */
+    case 2:
+      out_two (0);
+      break;
+    case 1:
+      out_one (0);
+      out_two (0);
+      break;
+    default:
+      break;
+  }
 }
 
 static int
