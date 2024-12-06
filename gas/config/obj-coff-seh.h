@@ -57,6 +57,9 @@
   .seh_savexmm
   .seh_pushframe
   .seh_code
+  .seh_startepilogue
+  .seh_endepilogue
+  .seh_endfunclet
 */
 
 /* architecture specific pdata/xdata handling.  */
@@ -75,8 +78,36 @@
 	{"seh_no32", obj_coff_seh_32, 0}, \
 	{"seh_handler", obj_coff_seh_handler, 0}, \
 	{"seh_code", obj_coff_seh_code, 0}, \
-	{"seh_handlerdata", obj_coff_seh_handlerdata, 0},
+	{"seh_handlerdata", obj_coff_seh_handlerdata, 0}, \
 
+#undef SEH_CMDS
+#define SEH_CMDS \
+        {"seh_proc", obj_coff_seh_proc, 0}, \
+        {"seh_endproc", obj_coff_seh_endproc, 0}, \
+        {"seh_endprologue", obj_coff_seh_endprologue, 0}, \
+	{"seh_startepilogue", obj_coff_seh_startepilogue, 0}, \
+	{"seh_endepilogue", obj_coff_seh_endepilogue, 0}, \
+        {"seh_stackalloc", obj_coff_seh_stackalloc, 0}, \
+	{"seh_handler", obj_coff_seh_handler, 0}, \
+	{"seh_handlerdata", obj_coff_seh_handlerdata, 0}, \
+        {"seh_endfunclet", obj_coff_seh_endfunclet, 0}, \
+        {"seh_save_reg", obj_coff_seh_save_reg, 0}, \
+        {"seh_save_reg_x", obj_coff_seh_save_reg, 1}, \
+	{"seh_save_regp", obj_coff_seh_save_reg, 2}, \
+        {"seh_save_regp_x", obj_coff_seh_save_reg, 3}, \
+	{"seh_save_lrpair", obj_coff_seh_save_reg, 4}, \
+	{"seh_save_fregp", obj_coff_seh_save_reg, 5}, \
+        {"seh_save_fregp_x", obj_coff_seh_save_reg, 6}, \
+	{"seh_save_freg", obj_coff_seh_save_reg, 7}, \
+	{"seh_save_freg_x", obj_coff_seh_save_reg, 8}, \
+	{"seh_save_fplr", obj_coff_seh_save_fplr, 0}, \
+	{"seh_save_fplr_x", obj_coff_seh_save_fplr, 1}, \
+        {"seh_save_r19r20_x", obj_coff_seh_save_fplr, 2}, \
+	{"seh_add_fp", obj_coff_seh_add_fp, 0}, \
+        {"seh_nop", obj_coff_seh_nop, 0}, \
+        {"seh_pac_sign_lr", obj_coff_seh_pac_sign_lr, 0}, \
+        {"seh_set_fp", obj_coff_seh_set_fp, 0}, \
+        {"seh_save_next", obj_coff_seh_save_next, 0},
 /* Type definitions.  */
 
 typedef struct seh_prologue_element
