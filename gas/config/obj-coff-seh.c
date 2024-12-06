@@ -38,8 +38,8 @@ static struct seh_seg_list *p_segcur = NULL;
 
 static void write_function_xdata (seh_context *);
 static void write_function_pdata (seh_context *);
+static bool write_pdata_xdata_records(void);
 
-
 /* Build based on segment the derived .pdata/.xdata
    segment name containing origin segment's postfix name part.  */
 static char *
@@ -463,8 +463,11 @@ do_seh_endproc (void)
 {
   seh_ctx_cur->end_addr = symbol_temp_new_now ();
 
-  write_function_xdata (seh_ctx_cur);
-  write_function_pdata (seh_ctx_cur);
+  if (write_pdata_xdata_records ())
+  {
+    write_function_xdata (seh_ctx_cur);
+    write_function_pdata (seh_ctx_cur);
+  }
   seh_ctx_cur = NULL;
 }
 
@@ -1597,6 +1600,66 @@ seh_x64_write_function_xdata (seh_context *c)
   /* Handler data will be tacked in here by subsections.  */
 }
 
+/* Write out the xdata information for one function (arm64).  */
+static void
+seh_arm64_write_function_xdata (seh_context *c)
+{
+  expressionS exp;
+  unsigned int total_bytes = 0;
+
+  /* Set 4-byte alignment.  */
+  frag_align (2, 0, 0);
+
+  c->xdata_addr = symbol_temp_new_now ();
+
+  /* Store function length   */
+  /* TODO: Implement function length > 1M   */
+  exp.X_op = O_subtract;
+  exp.X_add_symbol = c->end_addr;
+  exp.X_op_symbol = c->start_addr;
+  exp.X_add_number = 0;
+  if (resolve_expression (&exp) && exp.X_op == O_constant)
+    c->arm64_ctx.xdata_header.func_length = exp.X_add_number / 4;
+
+  c->arm64_ctx.xdata_header.vers = 0;
+
+    /* TODO: Implement logic for > 31 scopes   */
+  c->arm64_ctx.xdata_header.e = 0;
+  c->arm64_ctx.xdata_header.epilogue_count = c->arm64_ctx.epilogue_scopes_count;
+
+  /* TODO:  Implement > 31 unwind codes   */
+
+  total_bytes = c->arm64_ctx.unwind_codes_byte_count;
+
+  if (total_bytes % 4 == 0)
+  {
+    c->arm64_ctx.xdata_header.code_words = total_bytes / 4;
+  }
+  else
+  {
+    c->arm64_ctx.xdata_header.code_words = total_bytes / 4 + 1;
+  }
+
+  c->arm64_ctx.xdata_header.ext_epilogue_count = 0;
+  c->arm64_ctx.xdata_header.ext_code_words = 0;
+  c->arm64_ctx.xdata_header.reserved = 0;
+
+  out_ptr (&c->arm64_ctx.xdata_header, 4);
+
+  /* TODO: Implement emitting of > 1 epilogue scope   */
+
+  if (c->arm64_ctx.unwind_codes_byte_count > 0)
+    seh_arm64_emit_unwind_codes (c);
+
+  if (c->arm64_ctx.xdata_header.x == 1)
+  {
+    if (c->handler.X_op == O_symbol)
+      c->handler.X_op = O_symbol_rva;
+
+    emit_expr (&c->handler, 4);
+  } 
+}
+
 /* Write out xdata for one function.  */
 
 static void
@@ -1605,13 +1668,25 @@ write_function_xdata (seh_context *c)
   segT save_seg = now_seg;
   int save_subseg = now_subseg;
 
+  seh_kind target_kind = seh_get_target_kind ();
+
   /* MIPS, SH, ARM don't have xdata.  */
-  if (seh_get_target_kind () != seh_kind_x64)
+  if ((target_kind != seh_kind_x64) && (target_kind != seh_kind_arm64))
     return;
 
   switch_xdata (c->subsection, c->code_seg);
 
-  seh_x64_write_function_xdata (c);
+  switch (target_kind)
+  {
+    case seh_kind_x64:
+      seh_x64_write_function_xdata (c);
+      break;
+    case seh_kind_arm64:
+      seh_arm64_write_function_xdata (c);
+      break;
+    default:
+      break;
+  }
 
   subseg_set (save_seg, save_subseg);
 }
@@ -1696,6 +1771,19 @@ write_function_pdata (seh_context *c)
       emit_expr (&exp, 4);
       break;
 
+    case seh_kind_arm64:
+      exp.X_op = O_symbol_rva;
+      exp.X_add_number = 0;
+      exp.X_add_symbol = c->start_addr;
+      emit_expr (&exp, 4);
+
+      exp.X_op = O_symbol_rva;
+      /* TODO: Implementing packed unwind data would set exp.X_add_number = 1   */
+      exp.X_add_number = 0;
+      exp.X_add_symbol = c->xdata_addr;
+      emit_expr (&exp, 4);
+      break;
+
     case seh_kind_mips:
       exp.X_op = O_symbol;
       exp.X_add_number = 0;
@@ -1724,3 +1812,12 @@ write_function_pdata (seh_context *c)
 
   subseg_set (save_seg, save_subseg);
 }
+
+static inline bool
+write_pdata_xdata_records(void)
+{
+  seh_kind kind = seh_get_target_kind ();
+  if (kind == seh_kind_arm64) return seh_ctx_cur->arm64_ctx.unwind_codes_byte_count > 0;
+  return kind == seh_kind_x64;
+}
+
