@@ -59,6 +59,33 @@
   .seh_code
 */
 
+typedef enum seh_arm64_unwind_types
+{
+  alloc_s,
+  alloc_m,
+  alloc_l,
+  save_reg,
+  save_reg_x,
+  save_regp,
+  save_regp_x,
+  save_fregp,
+  save_fregp_x,
+  save_freg,
+  save_freg_x,
+  save_lrpair,
+  save_fplr,
+  save_fplr_x,
+  save_r19r20_x,
+  add_fp,
+  set_fp,
+  save_next,
+  nop,
+  pac_sign_lr,
+  end,
+  end_c,
+  unwind_last_type = end_c
+} seh_arm64_unwind_types;
+
 /* architecture specific pdata/xdata handling.  */
 #define SEH_CMDS \
         {"seh_proc", obj_coff_seh_proc, 0}, \
@@ -86,6 +113,80 @@ typedef struct seh_prologue_element
   offsetT off;
   symbolS *pc_addr;
 } seh_prologue_element;
+
+typedef struct seh_arm64_unwind_code
+{
+  uint32_t value;
+  seh_arm64_unwind_types type;
+} seh_arm64_unwind_code;
+
+typedef struct seh_arm64_packed_unwind_data
+{
+  unsigned int flag : 2;
+  unsigned int func_length : 11;
+  unsigned int frame_size : 9;
+  unsigned int cr : 2;
+  unsigned int h : 1;
+  unsigned int regI : 4;
+  unsigned int regF : 3;
+} seh_arm64_packed_unwind_data;
+
+typedef struct seh_arm64_except_info
+{
+  unsigned int flag : 2;
+  unsigned int except_info_rva : 30;
+} seh_arm64_except_info;
+
+typedef union seh_arm64_unwind_info
+{
+  seh_arm64_except_info except_info;
+  seh_arm64_packed_unwind_data packed_unwind_data;
+} seh_arm64_unwind_info;
+
+typedef struct seh_arm64_pdata
+{
+  unsigned int func_start_rva;
+  seh_arm64_unwind_info except_info_unwind;
+} seh_arm64_pdata;
+
+typedef struct seh_arm64_xdata_header
+{
+  unsigned int func_length : 18;
+  unsigned int vers : 2;
+  unsigned int x : 1;
+  unsigned int e : 1;
+  unsigned int epilogue_count : 5;
+  unsigned int code_words : 5;
+  unsigned int ext_epilogue_count : 16;
+  unsigned int ext_code_words : 8;
+  unsigned int reserved : 8;
+} seh_arm64_xdata_header;
+
+typedef struct seh_arm64_epilogue_scope
+{
+  unsigned int epilogue_start_offset : 18;
+  unsigned int reserved : 4;
+  unsigned int epilogue_start_index : 10;
+} seh_arm64_epilogue_scope;
+
+#define ARM64_MAX_UNWIND_CODES 286
+#define ARM64_MAX_EPILOGUE_SCOPES 32
+
+typedef struct seh_arm64_context
+{
+  seh_arm64_pdata pdata;
+  union {
+    seh_arm64_xdata_header xdata_header;
+    valueT xdata_header_value;
+  };
+  unsigned int unwind_codes_count;
+  unsigned int unwind_codes_byte_count;
+  seh_arm64_unwind_code unwind_codes[ARM64_MAX_UNWIND_CODES];
+  unsigned int epilogue_scopes_count;
+  seh_arm64_epilogue_scope epilogue_scopes[ARM64_MAX_EPILOGUE_SCOPES];
+  expressionS except_handler;
+  expressionS except_handler_data;
+} seh_arm64_context;
 
 typedef struct seh_context
 {
@@ -128,13 +229,17 @@ typedef struct seh_context
   int elems_count;
   int elems_max;
   seh_prologue_element *elems;
+
+  /* arm64-specific context.  */
+  seh_arm64_context arm64_ctx;
 } seh_context;
 
 typedef enum seh_kind {
   seh_kind_unknown = 0,
   seh_kind_mips = 1,  /* Used for MIPS and x86 pdata generation.  */
   seh_kind_arm = 2,   /* Used for ARM, PPC, SH3, and SH4 pdata (PDATA_EH) generation.  */
-  seh_kind_x64 = 3    /* Used for IA64 and x64 pdata/xdata generation.  */
+  seh_kind_x64 = 3,   /* Used for IA64 and x64 pdata/xdata generation.  */
+  seh_kind_arm64 = 4  /* Used for ARM64 pdata/xdata generation.  */
 } seh_kind;
 
 /* Forward declarations.  */
@@ -202,5 +307,30 @@ static void obj_coff_seh_code (int);
 #define PEX64_SCOPE_ENTRY(COUNTOFUNWINDCODES, IDX) \
   (PEX64_OFFSET_TO_SCOPE_COUNT(COUNTOFUNWINDCODES) + \
    PEX64_SCOPE_ENTRY_SIZE * (IDX))
+
+/* arm64 unwind code structs.  */
+
+#define ARM64_UNOP_ALLOCS       0b000U
+#define ARM64_UNOP_SAVER19R20X  0b001U
+#define ARM64_UNOP_SAVEFPLR     0b01U
+#define ARM64_UNOP_SAVEFPLRX    0b10U
+#define ARM64_UNOP_ALLOCM       0b11000U
+#define ARM64_UNOP_SAVEREGP     0b110010U
+#define ARM64_UNOP_SAVEREGPX    0b110011U
+#define ARM64_UNOP_SAVEREG      0b110100U
+#define ARM64_UNOP_SAVEREGX     0b1101010U
+#define ARM64_UNOP_SAVELRPAIR   0b1101011U
+#define ARM64_UNOP_SAVEFREGP    0b1101100U
+#define ARM64_UNOP_SAVEFREGPX   0b1101101U
+#define ARM64_UNOP_SAVEFREG     0b1101110U
+#define ARM64_UNOP_SAVEFREGX    0b11011110U
+#define ARM64_UNOP_ALLOCL       0b11100000U
+#define ARM64_UNOP_SETFP        0b11100001U
+#define ARM64_UNOP_ADDFP        0b11100010U
+#define ARM64_UNOP_NOP          0b11100011U
+#define ARM64_UNOP_END          0b11100100U
+#define ARM64_UNOP_ENDC         0b11100101U
+#define ARM64_UNOP_SAVENEXT     0b11100110U
+#define ARM64_UNOP_PACSIGNLR    0b11111100U
 
 #endif
