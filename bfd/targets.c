@@ -1002,7 +1002,7 @@ static const bfd_target * const _bfd_target_vector[] =
 	&aarch64_elf64_le_cloudabi_vec,
 	&aarch64_mach_o_vec,
 	&aarch64_pe_le_vec,
-    &aarch64_pe_big_vec,
+	&aarch64_pe_big_vec,
 	&aarch64_pei_le_vec,
 #endif
 
