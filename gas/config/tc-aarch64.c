@@ -10112,7 +10112,7 @@ aarch64_after_parse_args (void)
 #endif
 }
 
-#if defined (TE_PE) || defined (TE_PEP)
+#ifdef OBJ_COFF
 /* Use big object file format.  */
 static int use_big_obj = 0;
 #endif
@@ -10500,7 +10500,7 @@ const struct option md_longopts[] = {
 #ifdef OPTION_EL
   {"EL", no_argument, NULL, OPTION_EL},
 #endif
-# if defined (TE_PE) || defined (TE_PEP)
+#ifdef OBJ_COFF
   {"mbig-obj", no_argument, NULL, OPTION_MBIG_OBJ},
 #endif
   {NULL, no_argument, NULL, 0}
@@ -11070,7 +11070,7 @@ md_parse_option (int c, const char *arg)
       break;
 #endif
 
-# if defined (TE_PE) || defined (TE_PEP)
+#ifdef OBJ_COFF
     case OPTION_MBIG_OBJ:
       use_big_obj = 1;
       break;
@@ -11149,7 +11149,7 @@ md_show_usage (FILE * fp)
   -EL                     assemble code for a little-endian cpu\n"));
 #endif
 
-#if defined (TE_PE) || defined (TE_PEP)
+#ifdef OBJ_COFF
   fprintf (fp, _("\
   -mbig-obj               generate big object files\n"));
 #endif
