@@ -10110,6 +10110,11 @@ aarch64_after_parse_args (void)
 #endif
 }
 
+#ifdef OBJ_COFF
+/* Use big object file format.  */
+static int use_big_obj = 0;
+#endif
+
 #ifdef OBJ_ELF
 const char *
 elf64_aarch64_target_format (void)
@@ -10137,7 +10142,7 @@ aarch64elf_frob_symbol (symbolS * symp, int *puntp)
 const char *
 coff_aarch64_target_format (void)
 {
-  return "pe-aarch64-little";
+  return use_big_obj ? "pe-aarch64-bigobj" : "pe-aarch64-little";
 }
 #endif
 
@@ -10484,6 +10489,7 @@ const char md_shortopts[] = "m:";
 #define OPTION_EL (OPTION_MD_BASE + 1)
 #endif
 #endif
+#define OPTION_MBIG_OBJ (OPTION_MD_BASE + 2)
 
 const struct option md_longopts[] = {
 #ifdef OPTION_EB
@@ -10491,6 +10497,9 @@ const struct option md_longopts[] = {
 #endif
 #ifdef OPTION_EL
   {"EL", no_argument, NULL, OPTION_EL},
+#endif
+#ifdef OBJ_COFF
+  {"mbig-obj", no_argument, NULL, OPTION_MBIG_OBJ},
 #endif
   {NULL, no_argument, NULL, 0}
 };
@@ -11059,6 +11068,12 @@ md_parse_option (int c, const char *arg)
       break;
 #endif
 
+#ifdef OBJ_COFF
+    case OPTION_MBIG_OBJ:
+      use_big_obj = 1;
+      break;
+#endif
+
     case 'a':
       /* Listing option.  Just ignore these, we don't support additional
          ones.  */
@@ -11130,6 +11145,11 @@ md_show_usage (FILE * fp)
 #ifdef OPTION_EL
   fprintf (fp, _("\
   -EL                     assemble code for a little-endian cpu\n"));
+#endif
+
+#ifdef OBJ_COFF
+  fprintf (fp, _("\
+  -mbig-obj               generate big object files\n"));
 #endif
 }
 
