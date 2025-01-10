@@ -16,6 +16,12 @@ case ${target} in
   *-*-mingw*)
     mingw_behavior=1
     ;;
+  aarch64-*-cygwin*)
+    cygwin_behavior=0;
+    ;;
+  *-*-cygwin*)
+    cygwin_behavior=1
+    ;;
   *)
     mingw_behavior=0
     ;;
@@ -75,6 +81,7 @@ fragment <<EOF
 EOF
 
 case ${target} in
+  aarch64-*-mingw* | aarch64-*-pe* | aarch64-*-cygwin | \
   x86_64-*-mingw* | x86_64-*-pe | x86_64-*-pep | x86_64-*-cygwin | \
   i[3-7]86-*-mingw32* | i[3-7]86-*-cygwin* | i[3-7]86-*-winnt | i[3-7]86-*-pe)
 fragment <<EOF
