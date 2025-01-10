@@ -913,8 +913,11 @@ EOF
 		exit ;;
 	esac ;;
     i*:UWIN*:*)
-	echo "$UNAME_MACHINE"-pc-uwin
-	exit ;;
+	GUESS="$UNAME_MACHINE"-pc-uwin
+	;;
+    aarch64:CYGWIN*:*:*)
+	GUESS=aarch64-pc-cygwin
+	;;
     amd64:CYGWIN*:*:* | x86_64:CYGWIN*:*:*)
 	echo x86_64-pc-cygwin
 	exit ;;
