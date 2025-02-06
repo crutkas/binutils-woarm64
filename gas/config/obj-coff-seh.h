@@ -19,12 +19,13 @@
    02110-1301, USA.  */
 
 /* Short overview:
-  There are at the moment three different function entry formats preset.
+  There are at the moment four different function entry formats preset.
   The first is the MIPS one. The second version
   is for ARM, PPC, SH3, and SH4 mainly for Windows CE.
   The third is the IA64 and x64 version. Note, the IA64 isn't implemented yet,
   but to find information about it, please see specification about IA64 on
   http://download.intel.com/design/Itanium/Downloads/245358.pdf file.
+  The fourth is the AArch64 version.
 
   The first version has just entries in the pdata section: BeginAddress,
   EndAddress, ExceptionHandler, HandlerData, and PrologueEndAddress. Each
@@ -57,7 +58,41 @@
   .seh_savexmm
   .seh_pushframe
   .seh_code
+
+  The fourth version for AArch64 partially intersects with the x64
+  version, however it has a different extension to the unwind codes.
+  It emits SEH data to pdata and xdata sections.  In some cases SEH
+  data could be emitted to a packed record in the pdata section
+  without the need for data in the xdata section.  However, the packed
+  pdata record is not implemented yet.
 */
+
+typedef enum seh_aarch64_unwind_types
+{
+  alloc_s,
+  alloc_m,
+  alloc_l,
+  save_reg,
+  save_reg_x,
+  save_regp,
+  save_regp_x,
+  save_fregp,
+  save_fregp_x,
+  save_freg,
+  save_freg_x,
+  save_lrpair,
+  save_fplr,
+  save_fplr_x,
+  save_r19r20_x,
+  add_fp,
+  set_fp,
+  save_next,
+  nop,
+  pac_sign_lr,
+  end,
+  end_c,
+  unwind_last_type = end_c
+} seh_aarch64_unwind_types;
 
 /* architecture specific pdata/xdata handling.  */
 #define SEH_CMDS \
@@ -87,8 +122,104 @@ typedef struct seh_prologue_element
   symbolS *pc_addr;
 } seh_prologue_element;
 
+/* AArch64 exceptions handling and unwinding structures.
+   https://learn.microsoft.com/en-us/cpp/build/arm64-exception-handling#pdata-records.  */
+
+typedef struct seh_aarch64_unwind_code
+{
+  uint32_t value;
+  seh_aarch64_unwind_types type;
+} seh_aarch64_unwind_code;
+
+typedef struct seh_aarch64_packed_unwind_data
+{
+  uint32_t flag : 2;
+  uint32_t func_length : 11;
+  uint32_t frame_size : 9;
+  uint32_t cr : 2;
+  uint32_t h : 1;
+  uint32_t regI : 4;
+  uint32_t regF : 3;
+} seh_aarch64_packed_unwind_data;
+
+typedef struct seh_aarch64_except_info
+{
+  uint32_t flag : 2;
+  uint32_t except_info_rva : 30;
+} seh_aarch64_except_info;
+
+typedef union seh_aarch64_unwind_info
+{
+  seh_aarch64_except_info except_info;
+  seh_aarch64_packed_unwind_data packed_unwind_data;
+} seh_aarch64_unwind_info;
+
+typedef struct seh_aarch64_pdata
+{
+  unsigned int func_start_rva;
+  seh_aarch64_unwind_info except_info_unwind;
+} seh_aarch64_pdata;
+
+typedef struct seh_aarch64_xdata_header
+{
+  uint32_t func_length : 18;
+  uint32_t vers : 2;
+  uint32_t x : 1;
+  uint32_t e : 1;
+  uint32_t epilogue_count : 5;
+  uint32_t code_words : 5;
+  uint32_t ext_epilogue_count : 16;
+  uint32_t ext_code_words : 8;
+  uint32_t reserved : 8;
+} seh_aarch64_xdata_header;
+
+typedef struct seh_aarch64_epilogue_scope
+{
+  uint32_t epilogue_start_offset_reduced : 18;
+  uint32_t reserved : 4;
+  uint32_t epilogue_start_index : 10;
+  uintptr_t epilogue_start_offset;
+  uintptr_t epilogue_end_offset;
+} seh_aarch64_epilogue_scope;
+
+typedef struct seh_aarch64_func_fragment
+{
+  uintptr_t offset;
+  symbolS *xdata_addr;
+  struct seh_aarch64_func_fragment *next;
+} seh_aarch64_func_fragment;
+
+/* AARCH64_MAX_UNWIND_CODES is limited by
+   seh_aarch64_xdata_header::ext_code_words.  */
+#define AARCH64_MAX_UNWIND_CODES (255 * 4)
+#define AARCH64_MAX_UNWIND_CODES_SIZE (255 * 4)
+/* AARCH64_MAX_EPILOGUE_SCOPES is limited by
+   seh_aarch64_xdata_header::ext_epilogue_count.  */
+#define AARCH64_MAX_EPILOGUE_SCOPES 65535
+
+typedef struct seh_aarch64_context
+{
+  seh_aarch64_pdata pdata;
+  union {
+    seh_aarch64_xdata_header xdata_header;
+    valueT xdata_header_value;
+  };
+  unsigned unwind_codes_count;
+  unsigned unwind_codes_byte_count;
+  seh_aarch64_unwind_code unwind_codes[AARCH64_MAX_UNWIND_CODES];
+  unsigned epilogue_scopes_count;
+  unsigned epilogue_scopes_capacity;
+  seh_aarch64_epilogue_scope *epilogue_scopes;
+  expressionS except_handler;
+  expressionS except_handler_data;
+  /* The function fragments.  */
+  seh_aarch64_func_fragment func_fragment;
+} seh_aarch64_context;
+
 typedef struct seh_context
 {
+  struct seh_context *next;
+
   /* Initial code-segment.  */
   segT code_seg;
   /* Function name.  */
@@ -126,6 +257,9 @@ typedef struct seh_context
   int elems_count;
   int elems_max;
   seh_prologue_element *elems;
+
+  /* aarch64-specific context.  */
+  seh_aarch64_context aarch64_ctx;
 } seh_context;
 
 typedef enum seh_kind {
@@ -200,5 +334,30 @@ static void obj_coff_seh_code (int);
 #define PEX64_SCOPE_ENTRY(COUNTOFUNWINDCODES, IDX) \
   (PEX64_OFFSET_TO_SCOPE_COUNT(COUNTOFUNWINDCODES) + \
    PEX64_SCOPE_ENTRY_SIZE * (IDX))
+
+/* aarch64 unwind code structs.  */
+
+#define AARCH64_UNOP_ALLOCS	0b000U
+#define AARCH64_UNOP_SAVER19R20X	0b001U
+#define AARCH64_UNOP_SAVEFPLR	0b01U
+#define AARCH64_UNOP_SAVEFPLRX	0b10U
+#define AARCH64_UNOP_ALLOCM	0b11000U
+#define AARCH64_UNOP_SAVEREGP	0b110010U
+#define AARCH64_UNOP_SAVEREGPX	0b110011U
+#define AARCH64_UNOP_SAVEREG	0b110100U
+#define AARCH64_UNOP_SAVEREGX	0b1101010U
+#define AARCH64_UNOP_SAVELRPAIR	0b1101011U
+#define AARCH64_UNOP_SAVEFREGP	0b1101100U
+#define AARCH64_UNOP_SAVEFREGPX	0b1101101U
+#define AARCH64_UNOP_SAVEFREG	0b1101110U
+#define AARCH64_UNOP_SAVEFREGX	0b11011110U
+#define AARCH64_UNOP_ALLOCL	0b11100000U
+#define AARCH64_UNOP_SETFP	0b11100001U
+#define AARCH64_UNOP_ADDFP	0b11100010U
+#define AARCH64_UNOP_NOP		0b11100011U
+#define AARCH64_UNOP_END		0b11100100U
+#define AARCH64_UNOP_ENDC		0b11100101U
+#define AARCH64_UNOP_SAVENEXT	0b11100110U
+#define AARCH64_UNOP_PACSIGNLR	0b11111100U
 
 #endif
