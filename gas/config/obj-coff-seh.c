@@ -563,7 +563,11 @@ do_seh_endproc (void)
       write_function_pdata (seh_ctx_cur);
     }
 
-  seh_ctx_cur = NULL;
+  while(seh_ctx_cur) {
+    seh_context *ctx = seh_ctx_cur;
+    seh_ctx_cur = seh_ctx_cur->next;
+    XDELETE(ctx);
+  }
 }
 
 static void
@@ -685,15 +689,13 @@ obj_coff_seh_startepilogue (int what ATTRIBUTE_UNUSED)
   exp.X_op_symbol = seh_ctx_cur->start_addr;
   exp.X_add_number = 0;
 
-  if (!resolve_expression (&exp) || exp.X_op != O_constant) {
-    as_bad (_(".seh_startepilogue in a different section from .seh_proc"));
-    return;
-  }
+  if (!resolve_expression (&exp) || exp.X_op != O_constant || exp.X_add_number < 0)
+    as_bad (_(".seh_startepilog offset expression for %s "
+      "does not evaluate to a non-negative constant"), S_GET_NAME (epilogue_start_addr));
 
   seh_ctx_cur->arm64_ctx.epilogue_scopes[seh_ctx_cur->arm64_ctx.epilogue_scopes_count].epilogue_start_offset
     = exp.X_add_number / 4;
   seh_ctx_cur->arm64_ctx.epilogue_scopes[seh_ctx_cur->arm64_ctx.epilogue_scopes_count].reserved = 0;
-  /* optimization to reuse unwind codes from the prologue   */
   seh_ctx_cur->arm64_ctx.epilogue_scopes[seh_ctx_cur->arm64_ctx.epilogue_scopes_count].epilogue_start_index
     = seh_ctx_cur->arm64_ctx.unwind_codes_byte_count;
   seh_ctx_cur->arm64_ctx.epilogue_scopes_count++;
@@ -708,7 +710,20 @@ obj_coff_seh_endepilogue(int what ATTRIBUTE_UNUSED)
 
   demand_empty_rest_of_line ();
 
-  /* End code */
+  expressionS exp;
+  symbolS* epilogue_end_addr = symbol_temp_new_now ();
+  exp.X_op = O_subtract;
+  exp.X_add_symbol = epilogue_end_addr;
+  exp.X_op_symbol = seh_ctx_cur->start_addr;
+  exp.X_add_number = 0;
+
+  if (!resolve_expression (&exp) || exp.X_op != O_constant || exp.X_add_number < 0)
+    as_bad (_(".seh_endepilogue offset expression for %s "
+      "does not evaluate to a non-negative constant"), S_GET_NAME (epilogue_end_addr));
+
+  seh_ctx_cur->arm64_ctx.epilogue_scopes[seh_ctx_cur->arm64_ctx.epilogue_scopes_count - 1].epilogue_end_offset = exp.X_add_number;
+
+  /* End code.  */
   seh_arm64_add_unwind_element (end, 0, 0);
 }
 
@@ -1003,7 +1018,7 @@ obj_coff_seh_stackalloc (int what ATTRIBUTE_UNUSED)
       break;
 
     case seh_kind_arm64:
-      /* arm64 offset should be encoded in multiples of sixteen   */
+      /* arm64 offset should be encoded in multiples of sixteen.  */
       if ((off & 0xf) != 0)
 	{
 	  as_bad (_(".seh_stackalloc offset < 16-byte stack alignment"));
@@ -1145,21 +1160,50 @@ seh_x64_write_prologue_data (const seh_context *c)
 }
 
 static void
-seh_arm64_emit_unwind_codes (const seh_context *c)
+seh_arm64_emit_epilog_scopes (const seh_context *c, uint64_t fragment_offset,
+			      uint32_t prolog_size,
+			      uint32_t first_fragment_scope,
+			      uint32_t last_fragment_scope,
+			      bool has_phantom_prolog)
 {
-  unsigned int total_byte_count = 0;
-
-  for (int i = 0; i < (int)c->arm64_ctx.epilogue_scopes_count; ++i)
+  int32_t start_index_offset = 0;
+  if (first_fragment_scope < seh_ctx_cur->arm64_ctx.epilogue_scopes_count)
+    start_index_offset = seh_ctx_cur->arm64_ctx.epilogue_scopes[first_fragment_scope].epilogue_start_index - prolog_size;
+  if (has_phantom_prolog)
+    start_index_offset -= 1;
+  for (int i = first_fragment_scope; i < last_fragment_scope; ++i)
   {
     seh_arm64_epilogue_scope scope = seh_ctx_cur->arm64_ctx.epilogue_scopes[i];
-    scope.epilogue_start_offset = ((uintptr_t) c->start_addr - (uintptr_t) scope.epilogue_start_offset) >> 2;
-    out_ptr (seh_ctx_cur->arm64_ctx.epilogue_scopes + i, 4);
+    scope.epilogue_start_offset_reduced = (scope.epilogue_start_offset - fragment_offset) >> 2;
+    scope.epilogue_start_index -= start_index_offset;
+    out_four (*(uint32_t*) &scope);
+  }
+}
+
+static void
+seh_arm64_emit_unwind_codes (const seh_context *c, uint32_t prolog_size, uint32_t first_epilog_index, uint32_t last_epilog_index, bool has_phantom_prolog)
+{
+  uint32_t total_byte_count = 0;
+
+  if (has_phantom_prolog)
+  {
+    ++total_byte_count;
+    md_number_to_chars (frag_more (1), ARM64_UNOP_ENDC, 1);
   }
 
+  uint32_t unwind_bytes_offset = 0;
   for (int i = 0; i < (int)c->arm64_ctx.unwind_codes_count; ++i)
   {
     const seh_arm64_unwind_code *code = c->arm64_ctx.unwind_codes + i;
     const int byte_count = unwind_code_pack_infos[code->type].size;
+    unwind_bytes_offset += byte_count;
+
+    if (unwind_bytes_offset > last_epilog_index)
+      break;
+
+    if (unwind_bytes_offset > prolog_size
+	&& unwind_bytes_offset <= first_epilog_index)
+      continue;
 
     /*  emit unwind code bytes in big endian   */
     number_to_chars_bigendian (frag_more (byte_count), code->value, byte_count);
@@ -1168,8 +1212,10 @@ seh_arm64_emit_unwind_codes (const seh_context *c)
 
   /* handle word alignment   */
   int required_padding = (4 - total_byte_count % 4) % 4;
-  if (required_padding)
-    md_number_to_chars (frag_more (required_padding), 0, required_padding);
+  if (required_padding) {
+    const uint32_t nop_chain = 0xe3e3e3e3;
+    md_number_to_chars (frag_more (required_padding), nop_chain, required_padding);
+  }
 }
 
 static int
@@ -1270,51 +1316,167 @@ seh_x64_write_function_xdata (seh_context *c)
 static void
 seh_arm64_write_function_xdata (seh_context *c)
 {
-  expressionS exp;
-  unsigned int total_bytes = 0;
-
   /* Set 4-byte alignment.  */
   frag_align (2, 0, 0);
 
-  c->xdata_addr = symbol_temp_new_now ();
+  uintptr_t func_length = 0;
+  expressionS exp;
+  exp.X_op = O_subtract;
+  exp.X_add_symbol = c->end_addr;
+  exp.X_op_symbol = c->start_addr;
+  exp.X_add_number = 0;
+  if (!resolve_expression (&exp) || exp.X_op != O_constant || exp.X_add_number < 0)
+    as_bad (_("the function size expression for %s "
+      "does not evaluate to a non-negative constant"), S_GET_NAME (c->start_addr));
 
-  c->arm64_ctx.xdata_header.vers = 0;
-  c->arm64_ctx.xdata_header.func_length = ((uintptr_t) c->end_addr - (uintptr_t) c->start_addr) >> 2;
+  func_length = exp.X_add_number;
 
-    /* TODO: Implement logic for > 31 scopes   */
-  c->arm64_ctx.xdata_header.e = 0;
-  c->arm64_ctx.xdata_header.epilogue_count = c->arm64_ctx.epilogue_scopes_count;
+  const uint32_t max_frag_size = ((1 << 18) - 1) << 2;
+  uintptr_t fragment_offset = 0;
+  bool is_fragmented_function = func_length > max_frag_size;
 
-  /* TODO:  Implement > 31 unwind codes   */
-
-  total_bytes = c->arm64_ctx.unwind_codes_byte_count;
-
-  if (total_bytes % 4 == 0)
+  /* [first_fragment_scope, last_fragment_scope).  */
+  uint32_t first_fragment_scope = 0;
+  uint32_t last_fragment_scope = 0;
+  uint32_t prolog_size = 0;
+  uint32_t prolog_insruction_count = 0;
+  for (int i = 0; i < c->arm64_ctx.unwind_codes_count; ++i)
   {
-    c->arm64_ctx.xdata_header.code_words = total_bytes / 4;
+    if (c->arm64_ctx.unwind_codes[i].type == end)
+    {
+      prolog_insruction_count = i + 1;
+      break;
+    }
   }
+
+  if (c->arm64_ctx.epilogue_scopes_count)
+    prolog_size = c->arm64_ctx.epilogue_scopes[0].epilogue_start_index;
   else
+    prolog_size = c->arm64_ctx.unwind_codes_byte_count;
+
+  while(true)
   {
-    c->arm64_ctx.xdata_header.code_words = total_bytes / 4 + 1;
-  }
+    c->xdata_addr = symbol_temp_new_now ();
+    c->next = NULL;
+    c->arm64_ctx.fragment_offset = fragment_offset;
 
-  c->arm64_ctx.xdata_header.ext_epilogue_count = 0;
-  c->arm64_ctx.xdata_header.ext_code_words = 0;
-  c->arm64_ctx.xdata_header.reserved = 0;
+    uintptr_t frag_size = func_length - fragment_offset;
+    if (frag_size > max_frag_size)
+      frag_size = max_frag_size;
 
-  out_four (c->arm64_ctx.xdata_header_value);
+    bool is_first_frag = fragment_offset == 0;
+    bool is_last_frag = (fragment_offset + frag_size) == func_length;
 
-  /* TODO: Implement emitting of > 1 epilogue scope   */
+    if (!is_fragmented_function)
+      last_fragment_scope = c->arm64_ctx.epilogue_scopes_count;
+    else
+    {
+      first_fragment_scope = last_fragment_scope;
+      for (int i = first_fragment_scope; i < c->arm64_ctx.epilogue_scopes_count; ++i)
+      {
+	const seh_arm64_epilogue_scope *scope = c->arm64_ctx.epilogue_scopes + i;
+	if (scope->epilogue_start_offset >= (fragment_offset + frag_size))
+	  break;
 
-  if (c->arm64_ctx.unwind_codes_byte_count > 0)
-    seh_arm64_emit_unwind_codes (c);
+        if (scope->epilogue_end_offset >= (fragment_offset + frag_size)) {
+          frag_size = scope->epilogue_start_offset - fragment_offset;
+          break;
+        }
 
-  if (c->arm64_ctx.xdata_header.x == 1)
-  {
-    if (c->handler.X_op == O_symbol)
-      c->handler.X_op = O_symbol_rva;
+	last_fragment_scope = i + 1;
+      }
+    }
 
-    emit_expr (&c->handler, 4);
+    c->arm64_ctx.xdata_header.func_length = frag_size >> 2;
+    c->arm64_ctx.xdata_header.vers = 0;
+    c->arm64_ctx.xdata_header.e = 0;
+    c->arm64_ctx.xdata_header.code_words = 0;
+    c->arm64_ctx.xdata_header.epilogue_count = 0;
+
+    c->arm64_ctx.xdata_header.ext_code_words = 0;
+    c->arm64_ctx.xdata_header.ext_epilogue_count = last_fragment_scope - first_fragment_scope;
+    c->arm64_ctx.xdata_header.reserved = 0;
+
+    uint32_t first_epilog_index = 0;
+    uint32_t last_epilog_index = 0;
+    if (!c->arm64_ctx.xdata_header.ext_epilogue_count)
+    {
+      first_epilog_index = prolog_size;
+      last_epilog_index = prolog_size;
+    }
+    else
+    {
+      first_epilog_index = c->arm64_ctx.epilogue_scopes[first_fragment_scope].epilogue_start_index;
+      if (last_fragment_scope == c->arm64_ctx.epilogue_scopes_count)
+	last_epilog_index = c->arm64_ctx.unwind_codes_byte_count;
+      else
+	last_epilog_index = c->arm64_ctx.epilogue_scopes[last_fragment_scope].epilogue_start_index;
+    }
+
+    uint32_t unwind_bytes = 0;
+    if (is_first_frag || is_last_frag)
+      unwind_bytes += prolog_size;
+
+    if (c->arm64_ctx.xdata_header.ext_epilogue_count)
+      unwind_bytes += last_epilog_index - first_epilog_index;
+
+    if (is_fragmented_function && is_last_frag && unwind_bytes)
+    {
+      unwind_bytes += 1;
+      ++c->arm64_ctx.xdata_header.ext_epilogue_count;
+    }
+
+    c->arm64_ctx.xdata_header.ext_code_words = (unwind_bytes  + 3) / 4;
+
+    if (c->arm64_ctx.xdata_header.ext_code_words == 0 && c->arm64_ctx.xdata_header.ext_epilogue_count == 0 
+	|| c->arm64_ctx.xdata_header.ext_code_words > 31
+	|| c->arm64_ctx.xdata_header.ext_epilogue_count > 31)
+	md_number_to_chars (frag_more (8), c->arm64_ctx.xdata_header_value, 8);
+    else
+    {
+      c->arm64_ctx.xdata_header.code_words = c->arm64_ctx.xdata_header.ext_code_words;
+      c->arm64_ctx.xdata_header.epilogue_count = c->arm64_ctx.xdata_header.ext_epilogue_count;
+      if (c->arm64_ctx.xdata_header.epilogue_count == 1)
+      {
+	c->arm64_ctx.xdata_header.e = 1;
+	if (is_fragmented_function && is_last_frag)
+	  c->arm64_ctx.xdata_header.ext_epilogue_count = 0;
+	else
+	  c->arm64_ctx.xdata_header.ext_epilogue_count = c->arm64_ctx.epilogue_scopes[first_fragment_scope].epilogue_start_index;
+      }
+      out_four (c->arm64_ctx.xdata_header_value);
+    }
+
+    bool has_phantom_prolog = is_fragmented_function && is_last_frag;
+    if (c->arm64_ctx.xdata_header.ext_epilogue_count && !c->arm64_ctx.xdata_header.e) 
+    {
+      seh_arm64_emit_epilog_scopes(c, fragment_offset, prolog_size, first_fragment_scope, last_fragment_scope, has_phantom_prolog);
+      if (is_fragmented_function && is_last_frag) {
+	uint32_t epilog_start_offset = frag_size - prolog_insruction_count * 4;
+	md_number_to_chars (frag_more (4), (1 << 22) | (epilog_start_offset >> 2), 4);
+      }
+    }
+
+    if (c->arm64_ctx.xdata_header.ext_code_words)
+      seh_arm64_emit_unwind_codes (c, prolog_size, first_epilog_index, last_epilog_index, has_phantom_prolog);
+
+    if (c->arm64_ctx.xdata_header.x == 1)
+    {
+      if (c->handler.X_op == O_symbol)
+	c->handler.X_op = O_symbol_rva;
+
+      emit_expr (&c->handler, 4);
+    }
+
+    fragment_offset += frag_size;
+    if (fragment_offset == func_length)
+      break;
+
+    seh_context *next = XCNEW (seh_context);
+    memcpy(next, c, sizeof(seh_context));
+
+    c->next = next;
+    c = next;
   }
 }
 
@@ -1430,16 +1592,19 @@ write_function_pdata (seh_context *c)
       break;
 
     case seh_kind_arm64:
-      exp.X_op = O_symbol_rva;
-      exp.X_add_number = 0;
-      exp.X_add_symbol = c->start_addr;
-      emit_expr (&exp, 4);
+      while(c) {
+	exp.X_op = O_symbol_rva;
+	exp.X_add_number = c->arm64_ctx.fragment_offset;
+	exp.X_add_symbol = c->start_addr;
+	emit_expr (&exp, 4);
 
-      exp.X_op = O_symbol_rva;
-      /* TODO: Implementing packed unwind data would set exp.X_add_number = 1   */
-      exp.X_add_number = 0;
-      exp.X_add_symbol = c->xdata_addr;
-      emit_expr (&exp, 4);
+	exp.X_op = O_symbol_rva;
+	/* TODO: Implementing packed unwind data.  */
+	exp.X_add_number = 0;
+	exp.X_add_symbol = c->xdata_addr;
+	emit_expr (&exp, 4);
+	c = c->next;
+      }
       break;
 
     case seh_kind_mips:

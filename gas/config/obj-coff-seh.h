@@ -195,9 +195,11 @@ typedef struct seh_arm64_xdata_header
 
 typedef struct seh_arm64_epilogue_scope
 {
-  uint32_t epilogue_start_offset : 18;
+  uint32_t epilogue_start_offset_reduced : 18;
   uint32_t reserved : 4;
   uint32_t epilogue_start_index : 10;
+  uintptr_t epilogue_start_offset;
+  uintptr_t epilogue_end_offset;
 } seh_arm64_epilogue_scope;
 
 #define ARM64_MAX_UNWIND_CODES 286
@@ -215,6 +217,7 @@ typedef struct seh_arm64_context
   seh_arm64_unwind_code unwind_codes[ARM64_MAX_UNWIND_CODES];
   unsigned int epilogue_scopes_count;
   seh_arm64_epilogue_scope epilogue_scopes[ARM64_MAX_EPILOGUE_SCOPES];
+  uintptr_t fragment_offset;
   expressionS except_handler;
   expressionS except_handler_data;
 } seh_arm64_context;

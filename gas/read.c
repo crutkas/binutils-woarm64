@@ -816,6 +816,11 @@ in_bss (void)
 void
 do_align (unsigned int n, char *fill, unsigned int len, unsigned int max)
 {
+/* A temporary workaround to resolve the issue of calculating
+   the function length after applying the code alignment.  */
+  if (subseg_text_p (now_seg))
+    return;
+
   if (now_seg == absolute_section || in_bss ())
     {
       if (fill != NULL)
