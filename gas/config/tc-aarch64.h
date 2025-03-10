@@ -184,10 +184,16 @@ struct aarch64_frag_type
 #define TC_FRAG_INIT(fragp, max_bytes) aarch64_init_frag (fragp, max_bytes)
 #define HANDLE_ALIGN(sec, fragp) aarch64_handle_align (fragp)
 
+/* Sections are assumed to start aligned.  In executable section, there is no
+   MAP_DATA symbol pending.  So we only align the address during
+   MAP_DATA --> MAP_INSN transition.
+   For other sections, this is not guaranteed.  */
 #define md_do_align(N, FILL, LEN, MAX, LABEL)					\
   if (FILL == NULL && (N) != 0 && ! need_pass_2 && subseg_text_p (now_seg))	\
     {										\
-      frag_align_code (N, MAX);							\
+      enum mstate mapstate = seg_info (now_seg)->tc_segment_info_data.mapstate;	\
+      if (mapstate == MAP_DATA)							\
+	frag_align_code (N, MAX);						\
       goto LABEL;								\
     }
 
