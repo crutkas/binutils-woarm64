@@ -223,12 +223,16 @@ seh_validate_seg (const char *directive)
   return 0;
 }
 
+#if !defined (COFFAARCH64)
+
 /* Switch back to the code section, whatever that may be.  */
 static void
 obj_coff_seh_code (int ignored ATTRIBUTE_UNUSED)
 {
   subseg_set (seh_ctx_cur->code_seg, 0);
 }
+
+#endif
 
 static void
 switch_xdata (int subseg, segT code_seg)
@@ -381,6 +385,8 @@ skip_whitespace_and_comma (int required)
 
 /* Mark current context to use 32-bit instruction (arm).  */
 
+#if !defined (COFFAARCH64)
+
 static void
 obj_coff_seh_32 (int what)
 {
@@ -392,7 +398,11 @@ obj_coff_seh_32 (int what)
   demand_empty_rest_of_line ();
 }
 
+#endif
+
 /* Set for current context the handler and optional data (arm).  */
+
+#if !defined (COFFAARCH64)
 
 static void
 obj_coff_seh_eh (int what ATTRIBUTE_UNUSED)
@@ -407,6 +417,8 @@ obj_coff_seh_eh (int what ATTRIBUTE_UNUSED)
 
   demand_empty_rest_of_line ();
 }
+
+#endif
 
 /* Set for current context the default handler (x64).  */
 
@@ -788,6 +800,8 @@ seh_x64_make_prologue_element (int code, int info, offsetT off)
 
 /* Helper to read a register name from input stream (x64).  */
 
+#if !defined (COFFAARCH64)
+
 static int
 seh_x64_read_reg (const char *directive, int kind)
 {
@@ -837,7 +851,11 @@ seh_x64_read_reg (const char *directive, int kind)
   return i;
 }
 
+#endif
+
 /* Add a register push-unwind token to the current context.  */
+
+#if !defined (COFFAARCH64)
 
 static void
 obj_coff_seh_pushreg (int what ATTRIBUTE_UNUSED)
@@ -857,7 +875,11 @@ obj_coff_seh_pushreg (int what ATTRIBUTE_UNUSED)
   seh_x64_make_prologue_element (UWOP_PUSH_NONVOL, reg, 0);
 }
 
+#endif
+
 /* Add a register frame-unwind token to the current context.  */
+
+#if !defined (COFFAARCH64)
 
 static void
 obj_coff_seh_pushframe (int what ATTRIBUTE_UNUSED)
@@ -889,7 +911,11 @@ obj_coff_seh_pushframe (int what ATTRIBUTE_UNUSED)
   seh_x64_make_prologue_element (UWOP_PUSH_MACHFRAME, code, 0);
 }
 
+#endif
+
 /* Add a register save-unwind token to current context.  */
+
+#if !defined (COFFAARCH64)
 
 static void
 obj_coff_seh_save (int what)
@@ -935,6 +961,8 @@ obj_coff_seh_save (int what)
 
   seh_x64_make_prologue_element (code, reg, off);
 }
+
+#endif
 
 static void
 obj_coff_seh_save_reg (int type)
@@ -1064,6 +1092,8 @@ obj_coff_seh_stackalloc (int what ATTRIBUTE_UNUSED)
 
 /* Add a frame-pointer token to current context.  */
 
+#if !defined (COFFAARCH64)
+
 static void
 obj_coff_seh_setframe (int what ATTRIBUTE_UNUSED)
 {
@@ -1099,6 +1129,9 @@ obj_coff_seh_setframe (int what ATTRIBUTE_UNUSED)
       seh_x64_make_prologue_element (UWOP_SET_FPREG, 0, 0);
     }
 }
+
+#endif
+
 
 /* Data writing routines.  */
 
@@ -1178,7 +1211,7 @@ seh_x64_write_prologue_data (const seh_context *c)
 }
 
 static void
-seh_arm64_emit_epilog_scopes (const seh_context *c, uint64_t fragment_offset,
+seh_arm64_emit_epilog_scopes (const seh_context *, uint64_t fragment_offset,
 			      uint32_t prolog_size,
 			      uint32_t first_fragment_scope,
 			      uint32_t last_fragment_scope,
@@ -1192,13 +1225,13 @@ seh_arm64_emit_epilog_scopes (const seh_context *c, uint64_t fragment_offset,
 			 - prolog_size;
   if (has_phantom_prolog)
     start_index_offset -= 1;
-  for (int i = first_fragment_scope; i < last_fragment_scope; ++i)
+  for (uint32_t i = first_fragment_scope; i < last_fragment_scope; ++i)
   {
     seh_arm64_epilogue_scope scope = seh_ctx_cur->arm64_ctx.epilogue_scopes[i];
     scope.epilogue_start_offset_reduced = (scope.epilogue_start_offset
 					  - fragment_offset) >> 2;
     scope.epilogue_start_index -= start_index_offset;
-    out_four (*(uint32_t*) &scope);
+    out_four (scope.epilogue_start_offset_reduced);
   }
 }
 
@@ -1369,7 +1402,7 @@ seh_arm64_write_function_xdata (seh_context *c)
   uint32_t last_fragment_scope = 0;
   uint32_t prolog_size = 0;
   uint32_t prolog_insruction_count = 0;
-  for (int i = 0; i < c->arm64_ctx.unwind_codes_count; ++i)
+  for (unsigned int i = 0; i < c->arm64_ctx.unwind_codes_count; ++i)
   {
     if (c->arm64_ctx.unwind_codes[i].type == end)
     {
@@ -1401,7 +1434,7 @@ seh_arm64_write_function_xdata (seh_context *c)
     else
     {
       first_fragment_scope = last_fragment_scope;
-      for (int i = first_fragment_scope; i < c->arm64_ctx.epilogue_scopes_count;
+      for (unsigned int i = first_fragment_scope; i < c->arm64_ctx.epilogue_scopes_count;
 	   ++i)
       {
 	const seh_arm64_epilogue_scope *scope = c->arm64_ctx.epilogue_scopes;
@@ -1465,7 +1498,7 @@ seh_arm64_write_function_xdata (seh_context *c)
 
     header->ext_code_words = (unwind_bytes  + 3) / 4;
 
-    if (header->ext_code_words == 0 && header->ext_epilogue_count == 0
+    if ((header->ext_code_words == 0 && header->ext_epilogue_count == 0)
 	|| header->ext_code_words > 31
 	|| header->ext_epilogue_count > 31)
 	md_number_to_chars (frag_more (8), c->arm64_ctx.xdata_header_value, 8);
