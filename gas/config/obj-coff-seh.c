@@ -43,6 +43,9 @@ struct aarch64_unwind_code_pack_info {
 };
 
 /* Local data.  */
+#if defined (COFFAARCH64)
+static seh_context *seh_ctx_root = NULL;
+#endif
 static seh_context *seh_ctx_cur = NULL;
 static bool in_seh_proc = false;
 
@@ -509,13 +512,7 @@ static void
 seh_aarch64_add_unwind_element (seh_aarch64_unwind_types unwind_type,
 				int offset, int reg)
 {
-  const unsigned max_unwind_codes = AARCH64_MAX_UNWIND_CODES;
-  if (!in_seh_proc
-       || seh_ctx_cur->aarch64_ctx.unwind_codes_count >= max_unwind_codes)
-    {
-      as_bad (_("no unwind element available."));
-      return;
-    }
+  gas_assert (in_seh_proc);
 
   seh_aarch64_context* aarch64_ctx = &seh_ctx_cur->aarch64_ctx;
   seh_aarch64_unwind_code *aarch64_element;
@@ -525,6 +522,14 @@ seh_aarch64_add_unwind_element (seh_aarch64_unwind_types unwind_type,
   unwind_code_pack_info = aarch64_unwind_code_pack_data + unwind_type;
   aarch64_element->value = 0;
   int value_offset_bits = 0;
+
+  const unsigned max_unwind_size = AARCH64_MAX_UNWIND_CODES_SIZE;
+  if ((aarch64_ctx->unwind_codes_byte_count
+      + unwind_code_pack_info->size) > max_unwind_size)
+    {
+      as_bad (_("no unwind element available."));
+      return;
+    }
 
   if (unwind_code_pack_info->offset_bits)
     {
@@ -570,6 +575,16 @@ free_seh_ctx (struct seh_context *seh_ctx)
 {
   free (seh_ctx->elems);
   free (seh_ctx->func_name);
+#if defined (COFFAARCH64)
+  seh_aarch64_func_fragment *fragment;
+  fragment = seh_ctx->aarch64_ctx.func_fragment.next;
+  while (fragment)
+    {
+      seh_aarch64_func_fragment *next = fragment->next;
+      XDELETE (fragment);
+      fragment = next;
+    }
+#endif
   free (seh_ctx);
 }
 
@@ -628,6 +643,18 @@ obj_coff_seh_proc (int what ATTRIBUTE_UNUSED)
 
 
 #if defined (COFFAARCH64)
+  if (!seh_ctx_root)
+  {
+    seh_ctx_root = XCNEW (seh_context);
+    seh_ctx_cur = seh_ctx_root;
+  }
+  else
+  {
+    seh_ctx_cur->next = XCNEW (seh_context);
+    seh_ctx_cur = seh_ctx_cur->next;
+  }
+
+  seh_ctx_cur->next = NULL;
 #else
   seh_ctx_cur = XCNEW (seh_context);
 #endif
@@ -697,6 +724,90 @@ obj_coff_seh_endprologue (int what ATTRIBUTE_UNUSED)
    seh_aarch64_add_unwind_element (end, 0, 0);
 #endif
 }
+
+#if defined (COFFAARCH64)
+static void
+obj_coff_seh_startepilogue (int what ATTRIBUTE_UNUSED)
+{
+  symbolS *epilogue_start_addr;
+  expressionS exp;
+
+  if (!verify_context (".seh_startepilogue")
+      || !seh_validate_seg (".seh_startepilogue"))
+    return;
+  demand_empty_rest_of_line ();
+
+  const unsigned max_epilogue_scopes = AARCH64_MAX_EPILOGUE_SCOPES;
+  if (seh_ctx_cur->aarch64_ctx.epilogue_scopes_count >= max_epilogue_scopes)
+    {
+      as_bad (_("no epilogue scopes available."));
+      return;
+    }
+
+  epilogue_start_addr = symbol_temp_new_now ();
+  exp.X_op = O_subtract;
+  exp.X_add_symbol = epilogue_start_addr;
+  exp.X_op_symbol = seh_ctx_cur->start_addr;
+  exp.X_add_number = 0;
+
+  if (!resolve_expression (&exp) || exp.X_op != O_constant
+      || exp.X_add_number < 0)
+    as_bad (_(".seh_startepilog offset expression for %s "
+	    "does not evaluate to a non-negative constant"),
+	    S_GET_NAME (epilogue_start_addr));
+
+  seh_aarch64_epilogue_scope *epilogue_scope;
+  epilogue_scope = seh_ctx_cur->aarch64_ctx.epilogue_scopes
+    + seh_ctx_cur->aarch64_ctx.epilogue_scopes_count;
+  epilogue_scope->epilogue_start_offset = exp.X_add_number / 4;
+  epilogue_scope->reserved = 0;
+  epilogue_scope->epilogue_start_index
+    = seh_ctx_cur->aarch64_ctx.unwind_codes_byte_count;
+  seh_ctx_cur->aarch64_ctx.epilogue_scopes_count++;
+}
+
+static void
+obj_coff_seh_endepilogue (int what ATTRIBUTE_UNUSED)
+{
+  if (!verify_context (".seh_endepilogue")
+      || !seh_validate_seg (".seh_endepilogue"))
+    return;
+
+  demand_empty_rest_of_line ();
+
+  expressionS exp;
+  symbolS *epilogue_end_addr = symbol_temp_new_now ();
+  exp.X_op = O_subtract;
+  exp.X_add_symbol = epilogue_end_addr;
+  exp.X_op_symbol = seh_ctx_cur->start_addr;
+  exp.X_add_number = 0;
+
+  if (!resolve_expression (&exp) || exp.X_op != O_constant
+      || exp.X_add_number < 0)
+    as_bad (_(".seh_endepilogue offset expression for %s "
+	    "does not evaluate to a non-negative constant"),
+	    S_GET_NAME (epilogue_end_addr));
+
+   seh_aarch64_epilogue_scope *epilogue_scope;
+   epilogue_scope = seh_ctx_cur->aarch64_ctx.epilogue_scopes
+     + seh_ctx_cur->aarch64_ctx.epilogue_scopes_count - 1;
+
+   epilogue_scope->epilogue_end_offset = exp.X_add_number;
+
+  /* End code.  */
+  seh_aarch64_add_unwind_element (end, 0, 0);
+}
+
+static void
+obj_coff_seh_endfunclet (int what ATTRIBUTE_UNUSED)
+{
+  if (!verify_context (".seh_endfunclet")
+      || !seh_validate_seg (".seh_endfunclet"))
+    return;
+
+  demand_empty_rest_of_line ();
+}
+#endif
 
 /* End-of-file hook.  */
 
@@ -880,6 +991,58 @@ obj_coff_seh_save (int what)
     }
 
   seh_x64_make_prologue_element (code, reg, off);
+}
+#endif
+
+#if defined (COFFAARCH64)
+static void
+obj_coff_seh_save_reg (int type)
+{
+  gas_assert (type >= 0 && type <= unwind_last_type);
+
+  const struct aarch64_unwind_code_pack_info *unwind_code_pack_info;
+  unwind_code_pack_info = aarch64_unwind_code_pack_data + type;
+
+  if (!unwind_code_pack_info->directive
+      || !seh_validate_seg (unwind_code_pack_info->directive))
+    return;
+
+  SKIP_WHITESPACE ();
+
+  char *symbol_name = NULL;
+  int reg = -1;
+
+  if (unwind_code_pack_info->reg_bits)
+    {
+      char name_end = get_symbol_name (&symbol_name);
+      reg = atoi (symbol_name + 1);
+      (void) restore_line_pointer (name_end);
+
+      if (!skip_whitespace_and_comma (1))
+	return;
+
+      if (reg < 0 || reg > 30)
+	{
+	  as_bad (_("register number is out of range"));
+	  return;
+	}
+    }
+
+  offsetT off = -1;
+  if (unwind_code_pack_info->offset_bits)
+    {
+      off = get_absolute_expression ();
+
+      if (off < 0)
+	{
+	  as_bad (_("offset is negative"));
+	  return;
+	}
+    }
+
+  demand_empty_rest_of_line ();
+
+  seh_aarch64_add_unwind_element (type, off, reg);
 }
 #endif
 
