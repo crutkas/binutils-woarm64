@@ -570,14 +570,10 @@ do_seh_endproc (void)
       write_function_pdata (seh_ctx_cur);
     }
 
-  while (seh_ctx_cur)
-  {
-    seh_context *ctx = seh_ctx_cur;
-    seh_ctx_cur = seh_ctx_cur->next;
-    free (ctx->elems);
-    free (ctx->func_name);
-    XDELETE (ctx);
-  }
+  free (seh_ctx_cur->elems);
+  free (seh_ctx_cur->func_name);
+  free (seh_ctx_cur);
+  seh_ctx_cur = NULL;
 }
 
 static void
@@ -1400,149 +1396,135 @@ seh_arm64_write_function_xdata (seh_context *c)
   else
     prolog_size = c->arm64_ctx.unwind_codes_byte_count;
 
-  while (true)
+  c->xdata_addr = symbol_temp_new_now ();
+  c->arm64_ctx.fragment_offset = fragment_offset;
+
+  uintptr_t frag_size = func_length - fragment_offset;
+  if (frag_size > max_frag_size)
+    frag_size = max_frag_size;
+
+  bool is_first_frag = fragment_offset == 0;
+  bool is_last_frag = (fragment_offset + frag_size) == func_length;
+
+  if (!is_fragmented_function)
+    last_fragment_scope = c->arm64_ctx.epilogue_scopes_count;
+  else
   {
-    c->xdata_addr = symbol_temp_new_now ();
-    c->next = NULL;
-    c->arm64_ctx.fragment_offset = fragment_offset;
-
-    uintptr_t frag_size = func_length - fragment_offset;
-    if (frag_size > max_frag_size)
-      frag_size = max_frag_size;
-
-    bool is_first_frag = fragment_offset == 0;
-    bool is_last_frag = (fragment_offset + frag_size) == func_length;
-
-    if (!is_fragmented_function)
-      last_fragment_scope = c->arm64_ctx.epilogue_scopes_count;
-    else
+    first_fragment_scope = last_fragment_scope;
+    for (unsigned int i = first_fragment_scope;
+          i < c->arm64_ctx.epilogue_scopes_count; ++i)
     {
-      first_fragment_scope = last_fragment_scope;
-      for (unsigned int i = first_fragment_scope;
-	   i < c->arm64_ctx.epilogue_scopes_count; ++i)
-      {
-	const seh_arm64_epilogue_scope *scope = c->arm64_ctx.epilogue_scopes;
-	scope += i;
-	if (scope->epilogue_start_offset >= (fragment_offset + frag_size))
-	  break;
+      const seh_arm64_epilogue_scope *scope = c->arm64_ctx.epilogue_scopes;
+      scope += i;
+      if (scope->epilogue_start_offset >= (fragment_offset + frag_size))
+        break;
 
-	if (scope->epilogue_end_offset >= (fragment_offset + frag_size))
-  {
-	  frag_size = scope->epilogue_start_offset - fragment_offset;
-	  break;
-	}
-
-	last_fragment_scope = i + 1;
+      if (scope->epilogue_end_offset >= (fragment_offset + frag_size))
+{
+        frag_size = scope->epilogue_start_offset - fragment_offset;
+        break;
       }
+
+      last_fragment_scope = i + 1;
     }
-
-    seh_arm64_xdata_header* header = &c->arm64_ctx.xdata_header;
-    const
-    seh_arm64_epilogue_scope* scopes = seh_ctx_cur->arm64_ctx.epilogue_scopes;
-
-    header->func_length = frag_size >> 2;
-    header->vers = 0;
-    header->e = 0;
-    header->code_words = 0;
-    header->epilogue_count = 0;
-
-    header->ext_code_words = 0;
-    header->ext_epilogue_count = last_fragment_scope
-					   - first_fragment_scope;
-    header->reserved = 0;
-
-    uint32_t first_epilog_index = 0;
-    uint32_t last_epilog_index = 0;
-    if (!header->ext_epilogue_count)
-    {
-      first_epilog_index = prolog_size;
-      last_epilog_index = prolog_size;
-    }
-    else
-    {
-      first_epilog_index = scopes[first_fragment_scope].epilogue_start_index;
-      if (last_fragment_scope == c->arm64_ctx.epilogue_scopes_count)
-	last_epilog_index = c->arm64_ctx.unwind_codes_byte_count;
-      else
-	last_epilog_index = scopes[last_fragment_scope].epilogue_start_index;
-    }
-
-    uint32_t unwind_bytes = 0;
-    if (is_first_frag || is_last_frag)
-      unwind_bytes += prolog_size;
-
-    if (header->ext_epilogue_count)
-      unwind_bytes += last_epilog_index - first_epilog_index;
-
-    if (is_fragmented_function && is_last_frag && unwind_bytes)
-    {
-      unwind_bytes += 1;
-      ++header->ext_epilogue_count;
-    }
-
-    header->ext_code_words = (unwind_bytes  + 3) / 4;
-
-    if ((header->ext_code_words == 0 && header->ext_epilogue_count == 0)
-	|| header->ext_code_words > 31
-	|| header->ext_epilogue_count > 31)
-	md_number_to_chars (frag_more (8), c->arm64_ctx.xdata_header_value, 8);
-    else
-    {
-      header->code_words = header->ext_code_words;
-      header->epilogue_count = header->ext_epilogue_count;
-      if (header->epilogue_count == 1)
-      {
-	header->e = 1;
-	if (is_fragmented_function && is_last_frag)
-	  header->ext_epilogue_count = 0;
-	else
-	{
-	  uint32_t start_index;
-	  start_index = scopes[first_fragment_scope].epilogue_start_index;
-	  header->ext_epilogue_count = start_index;
-	}
-      }
-      out_four (c->arm64_ctx.xdata_header_value);
-    }
-
-    bool has_phantom_prolog = is_fragmented_function && is_last_frag;
-    if (header->ext_epilogue_count && !header->e)
-    {
-      seh_arm64_emit_epilog_scopes (fragment_offset, prolog_size,
-				    first_fragment_scope, last_fragment_scope,
-				    has_phantom_prolog);
-      if (is_fragmented_function && is_last_frag)
-      {
-	uint32_t epilog_start_offset = frag_size - prolog_insruction_count * 4;
-	md_number_to_chars (frag_more (4),
-			    (1 << 22) | (epilog_start_offset >> 2), 4);
-      }
-    }
-
-    if (header->ext_code_words)
-      seh_arm64_emit_unwind_codes (c, prolog_size, first_epilog_index,
-				   last_epilog_index, has_phantom_prolog);
-
-    if (header->x == 1)
-    {
-      if (c->handler.X_op == O_symbol)
-	c->handler.X_op = O_symbol_rva;
-
-      emit_expr (&c->handler, 4);
-    }
-
-    fragment_offset += frag_size;
-    if (fragment_offset == func_length)
-      break;
-
-    seh_context *next = XCNEW (seh_context);
-    memcpy (next, c, sizeof (seh_context));
-    next->elems = NULL;
-    next->func_name = NULL;
-
-    c->next = next;
-    c = next;
   }
+
+  seh_arm64_xdata_header* header = &c->arm64_ctx.xdata_header;
+  const
+  seh_arm64_epilogue_scope* scopes = seh_ctx_cur->arm64_ctx.epilogue_scopes;
+
+  header->func_length = frag_size >> 2;
+  header->vers = 0;
+  header->e = 0;
+  header->code_words = 0;
+  header->epilogue_count = 0;
+
+  header->ext_code_words = 0;
+  header->ext_epilogue_count = last_fragment_scope
+                                          - first_fragment_scope;
+  header->reserved = 0;
+
+  uint32_t first_epilog_index = 0;
+  uint32_t last_epilog_index = 0;
+  if (!header->ext_epilogue_count)
+  {
+    first_epilog_index = prolog_size;
+    last_epilog_index = prolog_size;
+  }
+  else
+  {
+    first_epilog_index = scopes[first_fragment_scope].epilogue_start_index;
+    if (last_fragment_scope == c->arm64_ctx.epilogue_scopes_count)
+      last_epilog_index = c->arm64_ctx.unwind_codes_byte_count;
+    else
+      last_epilog_index = scopes[last_fragment_scope].epilogue_start_index;
+  }
+
+  uint32_t unwind_bytes = 0;
+  if (is_first_frag || is_last_frag)
+    unwind_bytes += prolog_size;
+
+  if (header->ext_epilogue_count)
+    unwind_bytes += last_epilog_index - first_epilog_index;
+
+  if (is_fragmented_function && is_last_frag && unwind_bytes)
+  {
+    unwind_bytes += 1;
+    ++header->ext_epilogue_count;
+  }
+
+  header->ext_code_words = (unwind_bytes  + 3) / 4;
+
+  if ((header->ext_code_words == 0 && header->ext_epilogue_count == 0)
+      || header->ext_code_words > 31
+      || header->ext_epilogue_count > 31)
+      md_number_to_chars (frag_more (8), c->arm64_ctx.xdata_header_value, 8);
+  else
+  {
+    header->code_words = header->ext_code_words;
+    header->epilogue_count = header->ext_epilogue_count;
+    if (header->epilogue_count == 1)
+    {
+      header->e = 1;
+      if (is_fragmented_function && is_last_frag)
+        header->ext_epilogue_count = 0;
+      else
+      {
+        uint32_t start_index;
+        start_index = scopes[first_fragment_scope].epilogue_start_index;
+        header->ext_epilogue_count = start_index;
+      }
+    }
+    out_four (c->arm64_ctx.xdata_header_value);
+  }
+
+  bool has_phantom_prolog = is_fragmented_function && is_last_frag;
+  if (header->ext_epilogue_count && !header->e)
+  {
+    seh_arm64_emit_epilog_scopes (fragment_offset, prolog_size,
+                                  first_fragment_scope, last_fragment_scope,
+                                  has_phantom_prolog);
+    if (is_fragmented_function && is_last_frag)
+    {
+      uint32_t epilog_start_offset = frag_size - prolog_insruction_count * 4;
+      md_number_to_chars (frag_more (4),
+                          (1 << 22) | (epilog_start_offset >> 2), 4);
+    }
+  }
+
+  if (header->ext_code_words)
+    seh_arm64_emit_unwind_codes (c, prolog_size, first_epilog_index,
+                                  last_epilog_index, has_phantom_prolog);
+
+  if (header->x == 1)
+  {
+    if (c->handler.X_op == O_symbol)
+      c->handler.X_op = O_symbol_rva;
+
+    emit_expr (&c->handler, 4);
+  }
+
+  fragment_offset += frag_size;
 }
 
 /* Write out xdata for one function.  */
@@ -1657,20 +1639,16 @@ write_function_pdata (seh_context *c)
       break;
 
     case seh_kind_arm64:
-      while (c)
-      {
-	exp.X_op = O_symbol_rva;
-	exp.X_add_number = c->arm64_ctx.fragment_offset;
-	exp.X_add_symbol = c->start_addr;
-	emit_expr (&exp, 4);
+      exp.X_op = O_symbol_rva;
+      exp.X_add_number = c->arm64_ctx.fragment_offset;
+      exp.X_add_symbol = c->start_addr;
+      emit_expr (&exp, 4);
 
-	exp.X_op = O_symbol_rva;
-	/* TODO: Implementing packed unwind data.  */
-	exp.X_add_number = 0;
-	exp.X_add_symbol = c->xdata_addr;
-	emit_expr (&exp, 4);
-	c = c->next;
-      }
+      exp.X_op = O_symbol_rva;
+      /* TODO: Implementing packed unwind data.  */
+      exp.X_add_number = 0;
+      exp.X_add_symbol = c->xdata_addr;
+      emit_expr (&exp, 4);
       break;
 
     case seh_kind_mips:
