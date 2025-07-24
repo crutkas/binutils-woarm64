@@ -28,6 +28,20 @@ struct seh_seg_list {
   char *seg_name;
 };
 
+struct aarch64_unwind_code_pack_info {
+  const char *directive;
+  unsigned offset_bits;
+  unsigned reg_bits;
+  unsigned code_bits;
+  unsigned code;
+  unsigned offset_right_shift;
+  unsigned offset;
+  unsigned reg_right_shift;
+  unsigned reg_offset;
+  unsigned type;
+  unsigned size;
+};
+
 /* Local data.  */
 static seh_context *seh_ctx_cur = NULL;
 
@@ -35,6 +49,60 @@ static htab_t seh_hash;
 
 static struct seh_seg_list *x_segcur = NULL;
 static struct seh_seg_list *p_segcur = NULL;
+
+#if defined (COFFAARCH64)
+static const struct aarch64_unwind_code_pack_info
+aarch64_unwind_code_pack_data[] = {
+/* Unwind codes packing for AArch64 is described at
+   https://learn.microsoft.com/en-us/cpp/build/arm64-exception-handling?view=msvc-170#unwind-codes
+   and calculated in seh_aarch64_add_unwind_element function.
+
+   directive, offset_bits, reg_bits, code_bits, code, offset_right_shift,
+   offset, reg_right_shift, reg_offset, type, size.  */
+  {NULL,		  5, 0, 3, AARCH64_UNOP_ALLOCS,	   4, 0, 0,  0,
+   alloc_s, 1},
+  {NULL,		 11, 0, 5, AARCH64_UNOP_ALLOCM,	   4, 0, 0,  0,
+   alloc_m, 2},
+  {NULL, 		 24, 0, 8, AARCH64_UNOP_ALLOCL,	   4, 0, 0,  0,
+   alloc_l, 4},
+  {".seh_save_reg",	  6, 4, 6, AARCH64_UNOP_SAVEREG,	   3, 0, 0, 19,
+   save_reg, 2},
+  {".seh_save_reg_x",	  5, 4, 7, AARCH64_UNOP_SAVEREGX,	   3, 1, 0, 19,
+   save_reg_x, 2},
+  {".seh_save_regp",	  6, 4, 6, AARCH64_UNOP_SAVEREGP,	   3, 0, 0, 19,
+   save_regp, 2},
+  {".seh_save_regp_x",	  6, 4, 6, AARCH64_UNOP_SAVEREGPX,   3, 1, 0, 19,
+   save_regp_x, 2},
+  {".seh_save_lrpair",	  6, 3, 7, AARCH64_UNOP_SAVELRPAIR,  3, 0, 1, 19,
+   save_lrpair, 2},
+  {".seh_save_fregp",	  6, 3, 7, AARCH64_UNOP_SAVEFREGP,   3, 0, 0,  8,
+   save_fregp, 2},
+  {".seh_save_fregp_x",	  6, 3, 7, AARCH64_UNOP_SAVEFREGPX,  3, 1, 0,  8,
+   save_fregp_x, 2},
+  {".seh_save_freg", 	  6, 3, 7, AARCH64_UNOP_SAVEFREG,	   3, 0, 0,  8,
+   save_freg, 2},
+  {".seh_save_freg_x",	  5, 3, 8, AARCH64_UNOP_SAVEFREGX,   3, 1, 0,  8,
+   save_freg_x, 2},
+  {".seh_save_fplr",	  6, 0, 2, AARCH64_UNOP_SAVEFPLR,	   3, 0, 0,  0,
+   save_fplr, 1},
+  {".seh_save_fplr_x",	  6, 0, 6, AARCH64_UNOP_SAVEFPLRX,   3, 1, 0,  0,
+   save_fplr_x, 1},
+  {".seh_save_r19r20_x",  5, 0, 3, AARCH64_UNOP_SAVER19R20X, 3, 0, 0,  0,
+   save_r19r20_x, 1},
+  {".seh_add_fp",	  8, 0, 8, AARCH64_UNOP_ADDFP,	   0, 0, 0,  0,
+   add_fp, 2},
+  {".seh_set_fp",	  0, 0, 8, AARCH64_UNOP_SETFP,	   0, 0, 0,  0,
+   set_fp, 1},
+  {".seh_save_next",	  0, 0, 8, AARCH64_UNOP_SAVENEXT,	   0, 0, 0,  0,
+   save_next, 1},
+  {".seh_nop",		  0, 0, 8, AARCH64_UNOP_NOP,	   0, 0, 0,  0,
+   nop, 1},
+  {".seh_pac_sign_lr",	  0, 0, 8, AARCH64_UNOP_PACSIGNLR,   0, 0, 0,  0,
+   pac_sign_lr, 1},
+  {NULL,		  0, 0, 8, AARCH64_UNOP_END,	   0, 0, 0,  0,
+   end, 1},
+};
+#endif
 
 static void write_function_xdata (seh_context *);
 static void write_function_pdata (seh_context *);
@@ -164,12 +232,14 @@ seh_validate_seg (const char *directive)
   return 0;
 }
 
+#if !defined (COFFAARCH64)
 /* Switch back to the code section, whatever that may be.  */
 static void
 obj_coff_seh_code (int ignored ATTRIBUTE_UNUSED)
 {
   subseg_set (seh_ctx_cur->code_seg, 0);
 }
+#endif
 
 static void
 switch_xdata (int subseg, segT code_seg)
@@ -189,6 +259,7 @@ switch_pdata (segT code_seg)
 
 /* Parsing routines.  */
 
+#if !defined (COFFAARCH64)
 /* Return the style of SEH unwind info to generate.  */
 
 static seh_kind
@@ -199,7 +270,6 @@ seh_get_target_kind (void)
 
   switch (bfd_get_arch (stdoutput))
     {
-    case bfd_arch_aarch64:
     case bfd_arch_arm:
     case bfd_arch_powerpc:
     case bfd_arch_sh:
@@ -227,18 +297,24 @@ seh_get_target_kind (void)
     }
   return seh_kind_unknown;
 }
+#endif
 
 /* Verify that seh directives are supported.  */
 
 static bool
 verify_target (const char *directive)
 {
+#if defined (COFFAARCH64)
+  (void) directive; /* Unused.  */
+#else
   if (seh_get_target_kind () == seh_kind_unknown)
     {
       as_warn (_("%s ignored for this target"), directive);
       ignore_rest_of_line ();
       return false;
     }
+#endif
+
   return true;
 }
 
@@ -256,6 +332,7 @@ verify_context (const char *directive)
   return 1;
 }
 
+#if !defined (COFFAARCH64)
 /* Similar, except we also verify the appropriate target.  */
 
 static int
@@ -269,6 +346,7 @@ verify_context_and_target (const char *directive, seh_kind target)
     }
   return verify_context (directive);
 }
+#endif
 
 /* Skip whitespace and a comma.  Error if the comma is not seen.  */
 
@@ -292,6 +370,7 @@ skip_whitespace_and_comma (int required)
   return 0;
 }
 
+#if !defined (COFFAARCH64)
 /* Mark current context to use 32-bit instruction (arm).  */
 
 static void
@@ -320,6 +399,7 @@ obj_coff_seh_eh (int what ATTRIBUTE_UNUSED)
 
   demand_empty_rest_of_line ();
 }
+#endif
 
 /* Set for current context the default handler (x64).  */
 
@@ -366,10 +446,21 @@ obj_coff_seh_handler (int what ATTRIBUTE_UNUSED)
   seh_ctx_cur->handler_data.X_add_number = 0;
   seh_ctx_cur->handler_flags = 0;
 
+#if defined (COFFAARCH64)
+  seh_ctx_cur->aarch64_ctx.xdata_header.x = 1;
+#endif
+
   if (!skip_whitespace_and_comma (0))
     return;
 
-  if (seh_get_target_kind () == seh_kind_x64)
+  bool seh_handler_supported;
+#if defined (COFFAARCH64)
+  seh_handler_supported = true;
+#else
+  seh_handler_supported = seh_get_target_kind () == seh_kind_x64;
+#endif
+
+  if (seh_handler_supported)
     {
       do
 	{
@@ -401,12 +492,68 @@ obj_coff_seh_handler (int what ATTRIBUTE_UNUSED)
 static void
 obj_coff_seh_handlerdata (int what ATTRIBUTE_UNUSED)
 {
+#if !defined (COFFAARCH64)
   if (!verify_context_and_target (".seh_handlerdata", seh_kind_x64))
     return;
+#endif
   demand_empty_rest_of_line ();
 
   switch_xdata (seh_ctx_cur->subsection + 1, seh_ctx_cur->code_seg);
 }
+
+#if defined (COFFAARCH64)
+/* Obtain available unwind element.  */
+
+static void
+seh_aarch64_add_unwind_element (seh_aarch64_unwind_types unwind_type,
+				int offset, int reg)
+{
+  const unsigned max_unwind_codes = AARCH64_MAX_UNWIND_CODES;
+  if (seh_ctx_cur == NULL
+       || seh_ctx_cur->aarch64_ctx.unwind_codes_count >= max_unwind_codes)
+    {
+      as_bad (_("no unwind element available."));
+      return;
+    }
+
+  seh_aarch64_context* aarch64_ctx = &seh_ctx_cur->aarch64_ctx;
+  seh_aarch64_unwind_code *aarch64_element;
+  aarch64_element = aarch64_ctx->unwind_codes
+		    + aarch64_ctx->unwind_codes_count++;
+  const struct aarch64_unwind_code_pack_info *unwind_code_pack_info;
+  unwind_code_pack_info = aarch64_unwind_code_pack_data + unwind_type;
+  aarch64_element->value = 0;
+  int value_offset_bits = 0;
+
+  if (unwind_code_pack_info->offset_bits)
+    {
+      offset = (offset >> unwind_code_pack_info->offset_right_shift)
+	       - unwind_code_pack_info->offset;
+      offset &= (1 << unwind_code_pack_info->offset_bits) - 1;
+      aarch64_element->value |= offset << value_offset_bits;
+      value_offset_bits += unwind_code_pack_info->offset_bits;
+    }
+
+  if (unwind_code_pack_info->reg_bits)
+    {
+      reg = (reg >> unwind_code_pack_info->reg_right_shift)
+	    - unwind_code_pack_info->reg_offset;
+      reg &= (1 << unwind_code_pack_info->reg_bits) - 1;
+      aarch64_element->value |= reg << value_offset_bits;
+      value_offset_bits += unwind_code_pack_info->reg_bits;
+    }
+
+  if (unwind_code_pack_info->code_bits)
+    {
+      int code = unwind_code_pack_info->code;
+      code &= (1 << unwind_code_pack_info->code_bits) - 1;
+      aarch64_element->value |= code << value_offset_bits;
+    }
+
+  aarch64_element->type = unwind_code_pack_info->type;
+  aarch64_ctx->unwind_codes_byte_count += unwind_code_pack_info->size;
+}
+#endif
 
 /* Mark end of current context.  */
 
@@ -465,11 +612,23 @@ obj_coff_seh_proc (int what ATTRIBUTE_UNUSED)
 
   seh_ctx_cur->code_seg = now_seg;
 
-  if (seh_get_target_kind () == seh_kind_x64)
+  bool use_xdata;
+#if defined (COFFAARCH64)
+  use_xdata = true;
+#else
+  use_xdata = seh_get_target_kind () == seh_kind_x64;
+#endif
+
+  if (use_xdata)
     {
       x_segcur = seh_hash_find_or_make (seh_ctx_cur->code_seg, ".xdata");
       seh_ctx_cur->subsection = x_segcur->subseg;
       x_segcur->subseg += 2;
+
+#if defined (COFFAARCH64)
+      seh_ctx_cur->aarch64_ctx.unwind_codes_count = 0;
+      seh_ctx_cur->aarch64_ctx.epilogue_scopes_count = 0;
+#endif
     }
 
   SKIP_WHITESPACE ();
@@ -498,6 +657,22 @@ obj_coff_seh_endprologue (int what ATTRIBUTE_UNUSED)
     as_warn (_("duplicate .seh_endprologue in .seh_proc block"));
   else
     seh_ctx_cur->endprologue_addr = symbol_temp_new_now ();
+
+#if defined (COFFAARCH64)
+  const int n = seh_ctx_cur->aarch64_ctx.unwind_codes_count;
+
+  /* Unwind codes need to be reversed.  */
+  for (int i = 0; i < n / 2; ++i)
+    {
+      seh_aarch64_unwind_code *unwind_codes;
+      unwind_codes = seh_ctx_cur->aarch64_ctx.unwind_codes;
+      seh_aarch64_unwind_code temp = unwind_codes[i];
+      unwind_codes[i] = unwind_codes[n-i-1];
+      unwind_codes[n-i-1] = temp;
+    }
+
+   seh_aarch64_add_unwind_element (end, 0, 0);
+#endif
 }
 
 /* End-of-file hook.  */
@@ -509,6 +684,7 @@ obj_coff_seh_do_final (void)
     as_bad (_("open SEH entry at end of file (missing .seh_endproc)"));
 }
 
+#if !defined (COFFAARCH64)
 /* Enter a prologue element into current context (x64).  */
 
 static void
@@ -682,6 +858,7 @@ obj_coff_seh_save (int what)
 
   seh_x64_make_prologue_element (code, reg, off);
 }
+#endif
 
 /* Add a stack-allocation token to current context.  */
 
@@ -689,15 +866,37 @@ static void
 obj_coff_seh_stackalloc (int what ATTRIBUTE_UNUSED)
 {
   offsetT off;
-  int code, info;
 
+#if !defined (COFFAARCH64)
   if (!verify_context_and_target (".seh_stackalloc", seh_kind_x64)
       || !seh_validate_seg (".seh_stackalloc"))
     return;
+#endif
 
   off = get_absolute_expression ();
   demand_empty_rest_of_line ();
 
+#if defined (COFFAARCH64)
+  /* aarch64 offset should be encoded in multiples of sixteen.  */
+  if ((off & 0xf) != 0)
+    {
+      as_bad (_(".seh_stackalloc offset < 16-byte stack alignment"));
+      return;
+    }
+
+  if (off < 0x200)
+    seh_aarch64_add_unwind_element (alloc_s, off, 0);
+  else if (off < 0x8000)
+    seh_aarch64_add_unwind_element (alloc_m, off, 0);
+  else if (off < 0x10000000)
+    seh_aarch64_add_unwind_element (alloc_l, off, 0);
+  else
+    {
+      as_bad (_(".seh_stackalloc offset out of range"));
+      return;
+    }
+#else
+  int code, info;
   if (off == 0)
     return;
   if (off < 0)
@@ -719,8 +918,10 @@ obj_coff_seh_stackalloc (int what ATTRIBUTE_UNUSED)
     }
 
   seh_x64_make_prologue_element (code, info, off);
+#endif
 }
 
+#if !defined (COFFAARCH64)
 /* Add a frame-pointer token to current context.  */
 
 static void
@@ -758,7 +959,8 @@ obj_coff_seh_setframe (int what ATTRIBUTE_UNUSED)
       seh_x64_make_prologue_element (UWOP_SET_FPREG, 0, 0);
     }
 }
-
+#endif
+
 /* Data writing routines.  */
 
 /* Output raw integers in 1, 2, or 4 bytes.  */
@@ -781,6 +983,7 @@ out_four (int data)
   md_number_to_chars (frag_more (4), data, 4);
 }
 
+#if !defined (COFFAARCH64)
 /* Write out prologue data for x64.  */
 
 static void
@@ -929,6 +1132,7 @@ seh_x64_write_function_xdata (seh_context *c)
 
   /* Handler data will be tacked in here by subsections.  */
 }
+#endif
 
 /* Write out xdata for one function.  */
 
@@ -949,6 +1153,7 @@ write_function_xdata (seh_context *c)
   subseg_set (save_seg, save_subseg);
 }
 
+#if !defined (COFFAARCH64)
 /* Write pdata section data for one function (arm).  */
 
 static void
@@ -999,6 +1204,7 @@ seh_arm_write_function_pdata (seh_context *c)
     val |= 0x80000000U;
   out_four (val);
 }
+#endif
 
 /* Write out pdata for one function.  */
 
