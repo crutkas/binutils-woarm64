@@ -112,6 +112,17 @@ typedef enum seh_aarch64_unwind_types
 	{"seh_code", obj_coff_seh_code, 0}, \
 	{"seh_handlerdata", obj_coff_seh_handlerdata, 0},
 
+#if defined (COFFAARCH64)
+#undef SEH_CMDS
+#define SEH_CMDS \
+	{"seh_proc", obj_coff_seh_proc, 0}, \
+	{"seh_endproc", obj_coff_seh_endproc, 0}, \
+	{"seh_endprologue", obj_coff_seh_endprologue, 0}, \
+	{"seh_stackalloc", obj_coff_seh_stackalloc, 0}, \
+	{"seh_handler", obj_coff_seh_handler, 0}, \
+	{"seh_handlerdata", obj_coff_seh_handlerdata, 0},
+#endif
+
 /* Type definitions.  */
 
 typedef struct seh_prologue_element
@@ -271,18 +282,20 @@ typedef enum seh_kind {
 
 /* Forward declarations.  */
 static void obj_coff_seh_stackalloc (int);
-static void obj_coff_seh_setframe (int);
 static void obj_coff_seh_endprologue (int);
+static void obj_coff_seh_endproc (int);
+static void obj_coff_seh_proc (int);
+static void obj_coff_seh_handler (int);
+static void obj_coff_seh_handlerdata (int);
+#if !defined (COFFAARCH64)
+static void obj_coff_seh_setframe (int);
 static void obj_coff_seh_save (int);
 static void obj_coff_seh_pushreg (int);
 static void obj_coff_seh_pushframe (int);
-static void obj_coff_seh_endproc  (int);
 static void obj_coff_seh_eh (int);
 static void obj_coff_seh_32 (int);
-static void obj_coff_seh_proc  (int);
-static void obj_coff_seh_handler (int);
-static void obj_coff_seh_handlerdata (int);
 static void obj_coff_seh_code (int);
+#endif
 
 #define UNDSEC bfd_und_section_ptr
 
