@@ -75,8 +75,6 @@ aarch64_unwind_code_pack_data[] = {
    save_regp, 2},
   {".seh_save_regp_x",	  6, 4, 6, AARCH64_UNOP_SAVEREGPX,   3, 1, 0, 19,
    save_regp_x, 2},
-  {".seh_save_lrpair",	  6, 3, 7, AARCH64_UNOP_SAVELRPAIR,  3, 0, 1, 19,
-   save_lrpair, 2},
   {".seh_save_fregp",	  6, 3, 7, AARCH64_UNOP_SAVEFREGP,   3, 0, 0,  8,
    save_fregp, 2},
   {".seh_save_fregp_x",	  6, 3, 7, AARCH64_UNOP_SAVEFREGPX,  3, 1, 0,  8,
@@ -85,6 +83,8 @@ aarch64_unwind_code_pack_data[] = {
    save_freg, 2},
   {".seh_save_freg_x",	  5, 3, 8, AARCH64_UNOP_SAVEFREGX,   3, 1, 0,  8,
    save_freg_x, 2},
+  {".seh_save_lrpair",	  6, 3, 7, AARCH64_UNOP_SAVELRPAIR,  3, 0, 1, 19,
+   save_lrpair, 2},
   {".seh_save_fplr",	  6, 0, 2, AARCH64_UNOP_SAVEFPLR,	   3, 0, 0,  0,
    save_fplr, 1},
   {".seh_save_fplr_x",	  6, 0, 6, AARCH64_UNOP_SAVEFPLRX,   3, 1, 0,  0,
@@ -1437,6 +1437,9 @@ seh_aarch64_write_function_xdata (seh_context *seh_ctx)
 {
   if (!seh_ctx->aarch64_ctx.unwind_codes_byte_count)
     return;
+
+  /* Set 4-byte alignment.  */
+  frag_align (2, 0, 0);
 
   uintptr_t func_size = 0;
   expressionS exp;
