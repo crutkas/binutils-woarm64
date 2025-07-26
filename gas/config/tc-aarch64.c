@@ -10262,6 +10262,19 @@ aarch64_cleanup (void)
     }
 }
 
+#if defined (OBJ_COFF)
+/* Called after all assembly has been done.  */
+
+void
+aarch64_md_finish (void)
+{
+#ifdef obj_coff_generate_pdata
+  obj_coff_generate_pdata ();
+#endif
+}
+#endif /* OBJ_ELF */
+
+
 #ifdef OBJ_ELF
 /* Remove any excess mapping symbols generated for alignment frags in
    SEC.  We may have created a mapping symbol before a zero byte
@@ -11286,6 +11299,7 @@ md_show_usage (FILE * fp)
   -EL                     assemble code for a little-endian cpu\n"));
 #endif
 }
+
 
 /* Parse a .cpu directive.  */
 

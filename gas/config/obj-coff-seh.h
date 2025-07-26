@@ -247,6 +247,8 @@ typedef struct seh_aarch64_context
 
 typedef struct seh_context
 {
+  struct seh_context *next;
+
   /* Initial code-segment.  */
   segT code_seg;
   /* Function name.  */
