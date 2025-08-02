@@ -43,7 +43,9 @@ struct aarch64_unwind_code_pack_info {
 };
 
 /* Local data.  */
+static seh_context *seh_ctx_root = NULL;
 static seh_context *seh_ctx_cur = NULL;
+static bool in_seh_proc = false;
 
 static htab_t seh_hash;
 
@@ -323,7 +325,7 @@ verify_target (const char *directive)
 static int
 verify_context (const char *directive)
 {
-  if (seh_ctx_cur == NULL)
+  if (!in_seh_proc)
     {
       as_bad (_("%s used outside of .seh_proc block"), directive);
       ignore_rest_of_line ();
@@ -509,7 +511,7 @@ seh_aarch64_add_unwind_element (seh_aarch64_unwind_types unwind_type,
 				int offset, int reg)
 {
   const unsigned max_unwind_codes = AARCH64_MAX_UNWIND_CODES;
-  if (seh_ctx_cur == NULL
+  if (!in_seh_proc
        || seh_ctx_cur->aarch64_ctx.unwind_codes_count >= max_unwind_codes)
     {
       as_bad (_("no unwind element available."));
@@ -558,35 +560,20 @@ seh_aarch64_add_unwind_element (seh_aarch64_unwind_types unwind_type,
 /* Mark end of current context.  */
 
 static void
-do_seh_endproc (void)
+emit_pdata_xdata_records (struct seh_context *seh_ctx)
 {
-  seh_ctx_cur->end_addr = symbol_temp_new_now ();
+  write_function_xdata (seh_ctx);
+  write_function_pdata (seh_ctx);
+}
 
-#if defined (COFFAARCH64)
-/* Fragment alignment should be handled before writing unwinding
-   information to the .pdata/.xdata sections. This is required to
-   accurately calculate the function size, which is used to split
-   the function into multiple fragments if it is too large. */
-
-  struct frag * current_frag = frchain_now->frch_root;
-  while(current_frag)
-    {
-      if (current_frag->fr_type == rs_align_code)
-	{
-	  HANDLE_ALIGN (now_seg, current_frag);
-	  current_frag->fr_type = rs_fill;
-	}
-      current_frag = current_frag->fr_next;
-    }
-#endif
-
-  write_function_xdata (seh_ctx_cur);
-  write_function_pdata (seh_ctx_cur);
-  free (seh_ctx_cur->elems);
-  free (seh_ctx_cur->func_name);
+static void
+free_seh_ctx (struct seh_context *seh_ctx)
+{
+  free (seh_ctx->elems);
+  free (seh_ctx->func_name);
 #if defined (COFFAARCH64)
   seh_aarch64_func_fragment *fragment;
-  fragment = seh_ctx_cur->aarch64_ctx.func_fragment.next;
+  fragment = seh_ctx->aarch64_ctx.func_fragment.next;
   while (fragment)
     {
       seh_aarch64_func_fragment *next = fragment->next;
@@ -594,9 +581,9 @@ do_seh_endproc (void)
       fragment = next;
     }
 #endif
-  free (seh_ctx_cur);
-  seh_ctx_cur = NULL;
+  free (seh_ctx);
 }
+
 
 static void
 obj_coff_seh_endproc (int what ATTRIBUTE_UNUSED)
@@ -604,13 +591,22 @@ obj_coff_seh_endproc (int what ATTRIBUTE_UNUSED)
   if (!verify_target (".seh_endproc"))
     return;
   demand_empty_rest_of_line ();
-  if (seh_ctx_cur == NULL)
+  if (!in_seh_proc)
     {
       as_bad (_(".seh_endproc used without .seh_proc"));
       return;
     }
   seh_validate_seg (".seh_endproc");
-  do_seh_endproc ();
+
+  seh_ctx_cur->end_addr = symbol_temp_new_now ();
+#if defined (COFFAARCH64)
+#else
+  emit_pdata_xdata_records (seh_ctx_cur);
+  free_seh_ctx (seh_ctx_cur);
+  seh_ctx_cur = NULL;
+#endif
+
+  in_seh_proc = false;
 }
 
 /* Mark begin of new context.  */
@@ -623,10 +619,16 @@ obj_coff_seh_proc (int what ATTRIBUTE_UNUSED)
 
   if (!verify_target (".seh_proc"))
     return;
-  if (seh_ctx_cur != NULL)
+  if (in_seh_proc)
     {
       as_bad (_("previous SEH entry not closed (missing .seh_endproc)"));
-      do_seh_endproc ();
+#if defined (COFFAARCH64)
+#else
+      seh_ctx_cur->end_addr = symbol_temp_new_now ();
+      emit_pdata_xdata_records (seh_ctx_cur);
+      free_seh_ctx (seh_ctx_cur);
+      seh_ctx_cur = NULL;
+#endif
     }
 
   if (*input_line_pointer == 0 || *input_line_pointer == '\n')
@@ -636,8 +638,24 @@ obj_coff_seh_proc (int what ATTRIBUTE_UNUSED)
       return;
     }
 
-  seh_ctx_cur = XCNEW (seh_context);
 
+#if defined (COFFAARCH64)
+  if (!seh_ctx_root)
+  {
+    seh_ctx_root = XCNEW (seh_context);
+    seh_ctx_cur = seh_ctx_root;
+  }
+  else
+  {
+    seh_ctx_cur->next = XCNEW (seh_context);
+    seh_ctx_cur = seh_ctx_cur->next;
+  }
+
+  seh_ctx_cur->next = NULL;
+#else
+  seh_ctx_cur = XCNEW (seh_context);
+#endif
+  
   seh_ctx_cur->code_seg = now_seg;
 
   bool use_xdata;
@@ -668,6 +686,7 @@ obj_coff_seh_proc (int what ATTRIBUTE_UNUSED)
   demand_empty_rest_of_line ();
 
   seh_ctx_cur->start_addr = symbol_temp_new_now ();
+  in_seh_proc = true;
 }
 
 /* Mark end of prologue for current context.  */
@@ -790,10 +809,45 @@ obj_coff_seh_endfunclet (int what ATTRIBUTE_UNUSED)
 /* End-of-file hook.  */
 
 void
-obj_coff_seh_do_final (void)
+obj_coff_seh_do_final(void)
 {
-  if (seh_ctx_cur != NULL)
+  if (in_seh_proc)
     as_bad (_("open SEH entry at end of file (missing .seh_endproc)"));
+
+#if defined (COFFAARCH64)
+
+  
+  if (!seh_ctx_root)
+    return;
+    
+  struct seh_context *seh_ctx = seh_ctx_root;
+  while (seh_ctx) 
+  {
+
+  /* Fragment alignment should be handled before writing unwinding
+   information to the .pdata/.xdata sections. This is required to
+   accurately calculate the function size, which is used to split
+   the function into multiple fragments if it is too large. */
+
+    subseg_set (seh_ctx->code_seg, 0);
+    struct frag * current_frag = frchain_now->frch_root;
+    while(current_frag)
+    {
+      if (current_frag->fr_type == rs_align_code)
+        {
+          HANDLE_ALIGN (now_seg, current_frag);
+          current_frag->fr_type = rs_fill;
+        }
+      current_frag = current_frag->fr_next;
+    }
+
+    emit_pdata_xdata_records (seh_ctx);
+    struct seh_context *next = seh_ctx->next;
+// 	free_seh_ctx (seh_ctx);
+    seh_ctx = next;
+  }
+  seh_ctx_root = NULL;
+#endif
 }
 
 #if !defined (COFFAARCH64)
@@ -804,7 +858,7 @@ seh_x64_make_prologue_element (int code, int info, offsetT off)
 {
   seh_prologue_element *n;
 
-  if (seh_ctx_cur == NULL)
+  if (!in_seh_proc)
     return;
   if (seh_ctx_cur->elems_count == seh_ctx_cur->elems_max)
     {
@@ -1667,9 +1721,9 @@ write_function_pdata (seh_context *c)
   switch_pdata (c->code_seg);
 
 #if defined (COFFAARCH64)
-  if (seh_ctx_cur->aarch64_ctx.unwind_codes_byte_count)
+  if (c->aarch64_ctx.unwind_codes_byte_count)
     {
-      seh_aarch64_func_fragment *fragment = &seh_ctx_cur->aarch64_ctx.func_fragment;
+      seh_aarch64_func_fragment *fragment = &c->aarch64_ctx.func_fragment;
       while (fragment)
 	{
 	  exp.X_op = O_symbol_rva;
