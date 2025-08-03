@@ -222,7 +222,8 @@ typedef struct seh_aarch64_func_fragment
 
 /* AARCH64_MAX_UNWIND_CODES is limited by
    seh_aarch64_xdata_header::ext_code_words.  */
-#define AARCH64_MAX_UNWIND_CODES 255
+#define AARCH64_MAX_UNWIND_CODES (255 * 4)
+#define AARCH64_MAX_UNWIND_CODES_SIZE (255 * 4)
 /* AARCH64_MAX_EPILOGUE_SCOPES is limited by
    seh_aarch64_xdata_header::ext_epilogue_count.  */
 #define AARCH64_MAX_EPILOGUE_SCOPES 65535

@@ -510,13 +510,7 @@ static void
 seh_aarch64_add_unwind_element (seh_aarch64_unwind_types unwind_type,
 				int offset, int reg)
 {
-  const unsigned max_unwind_codes = AARCH64_MAX_UNWIND_CODES;
-  if (!in_seh_proc
-       || seh_ctx_cur->aarch64_ctx.unwind_codes_count >= max_unwind_codes)
-    {
-      as_bad (_("no unwind element available."));
-      return;
-    }
+  gas_assert (in_seh_proc);
 
   seh_aarch64_context* aarch64_ctx = &seh_ctx_cur->aarch64_ctx;
   seh_aarch64_unwind_code *aarch64_element;
@@ -526,6 +520,14 @@ seh_aarch64_add_unwind_element (seh_aarch64_unwind_types unwind_type,
   unwind_code_pack_info = aarch64_unwind_code_pack_data + unwind_type;
   aarch64_element->value = 0;
   int value_offset_bits = 0;
+
+  const unsigned max_unwind_size = AARCH64_MAX_UNWIND_CODES_SIZE;
+  if ((aarch64_ctx->unwind_codes_byte_count
+      + unwind_code_pack_info->size) > max_unwind_size)
+    {
+      as_bad (_("no unwind element available."));
+      return;
+    }
 
   if (unwind_code_pack_info->offset_bits)
     {
