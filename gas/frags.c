@@ -495,6 +495,25 @@ frag_offset_ignore_align_p (const fragS *frag1, const fragS *frag2,
 	}
     }
 
+  /* Maybe frag1 is after frag2.  */
+  off = frag1->fr_address - frag2->fr_address;
+  frag = frag2;
+  while (frag->fr_type == rs_fill
+	 || frag->fr_type == rs_align
+	 || frag->fr_type == rs_align_code
+	 || frag->fr_type == rs_align_test)
+    {
+      off -= frag->fr_fix + frag->fr_offset * frag->fr_var;
+      frag = frag->fr_next;
+      if (frag == NULL)
+	break;
+      if (frag == frag1)
+	{
+	  *offset = off;
+	  return true;
+	}
+    }
+
   return false;
 }
 
