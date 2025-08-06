@@ -43,7 +43,9 @@ struct aarch64_unwind_code_pack_info {
 };
 
 /* Local data.  */
+#if defined (COFFAARCH64)
 static seh_context *seh_ctx_root = NULL;
+#endif
 static seh_context *seh_ctx_cur = NULL;
 static bool in_seh_proc = false;
 
