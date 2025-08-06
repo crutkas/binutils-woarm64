@@ -825,27 +825,9 @@ obj_coff_seh_do_final(void)
   struct seh_context *seh_ctx = seh_ctx_root;
   while (seh_ctx) 
   {
-
-  /* Fragment alignment should be handled before writing unwinding
-   information to the .pdata/.xdata sections. This is required to
-   accurately calculate the function size, which is used to split
-   the function into multiple fragments if it is too large. */
-
-    subseg_set (seh_ctx->code_seg, 0);
-    struct frag * current_frag = frchain_now->frch_root;
-    while(current_frag)
-    {
-      if (current_frag->fr_type == rs_align_code)
-        {
-          HANDLE_ALIGN (now_seg, current_frag);
-          current_frag->fr_type = rs_fill;
-        }
-      current_frag = current_frag->fr_next;
-    }
-
     emit_pdata_xdata_records (seh_ctx);
     struct seh_context *next = seh_ctx->next;
-// 	free_seh_ctx (seh_ctx);
+    free_seh_ctx (seh_ctx);
     seh_ctx = next;
   }
   seh_ctx_root = NULL;
@@ -1443,19 +1425,24 @@ seh_aarch64_write_function_xdata (seh_context *seh_ctx)
   /* Set 4-byte alignment.  */
   frag_align (2, 0, 0);
 
-  uintptr_t func_size = 0;
-  expressionS exp;
-  exp.X_op = O_subtract;
-  exp.X_add_symbol = seh_ctx->end_addr;
-  exp.X_op_symbol = seh_ctx->start_addr;
-  exp.X_add_number = 0;
-  if (!resolve_expression (&exp) || exp.X_op != O_constant
-      || exp.X_add_number < 0)
-    as_bad (_("the function size expression for %s "
-	    "does not evaluate to a non-negative constant"),
-	    S_GET_NAME (seh_ctx->start_addr));
+  fragS *start_frag, *end_frag;
+  addressT start_value, end_value;
+  start_frag = symbol_get_frag_and_value (seh_ctx->start_addr, &start_value);
+  end_frag = symbol_get_frag_and_value (seh_ctx->end_addr, &end_value);
+  offsetT offset;
+  frag_offset_ignore_align_p(end_frag, start_frag, &offset);
+  start_value += offset / OCTETS_PER_BYTE;
+  offset = end_value - start_value;
 
-  func_size = exp.X_add_number;
+  if (offset < 0)
+    {
+      as_bad (_("the function size expression for %s "
+	      "does not evaluate to a non-negative value"),
+	      S_GET_NAME (seh_ctx->start_addr));
+      return;
+    }
+
+  uintptr_t func_size = offset;
 
   const uint32_t max_frag_size = ((1 << 18) - 1) << 2;
   uintptr_t fragment_offset = 0;
