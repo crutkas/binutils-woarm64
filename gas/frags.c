@@ -456,8 +456,8 @@ frag_offset_fixed_p (const fragS *frag1, const fragS *frag2, offsetT *offset)
   return false;
 }
 
-/* Return TRUE if FRAG2 follows FRAG1 with a fixed relationship
-   between the two assuming alignment frags do nothing.  Set OFFSET to
+/* Return TRUE if FRAG1 and FRAG2 have a fixed relationship between
+   their start addresses assuming alignment frags do nothing.  Set OFFSET to
    the difference in address not already accounted for in the frag
    FR_ADDRESS.  */
 
@@ -489,6 +489,25 @@ frag_offset_ignore_align_p (const fragS *frag1, const fragS *frag2,
       if (frag == NULL)
 	break;
       if (frag == frag2)
+	{
+	  *offset = off;
+	  return true;
+	}
+    }
+
+  /* Maybe frag1 is after frag2.  */
+  off = frag1->fr_address - frag2->fr_address;
+  frag = frag2;
+  while (frag->fr_type == rs_fill
+	 || frag->fr_type == rs_align
+	 || frag->fr_type == rs_align_code
+	 || frag->fr_type == rs_align_test)
+    {
+      off -= frag->fr_fix + frag->fr_offset * frag->fr_var;
+      frag = frag->fr_next;
+      if (frag == NULL)
+	break;
+      if (frag == frag1)
 	{
 	  *offset = off;
 	  return true;
