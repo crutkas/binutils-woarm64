@@ -816,6 +816,23 @@ obj_coff_seh_do_final(void)
 {
   if (in_seh_proc)
     as_bad (_("open SEH entry at end of file (missing .seh_endproc)"));
+
+#if defined (COFFAARCH64)
+
+  
+  if (!seh_ctx_root)
+    return;
+    
+  struct seh_context *seh_ctx = seh_ctx_root;
+  while (seh_ctx) 
+  {
+    emit_pdata_xdata_records (seh_ctx);
+    struct seh_context *next = seh_ctx->next;
+    free_seh_ctx (seh_ctx);
+    seh_ctx = next;
+  }
+  seh_ctx_root = NULL;
+#endif
 }
 
 #if !defined (COFFAARCH64)
@@ -1224,7 +1241,85 @@ seh_x64_write_prologue_data (const seh_context *c)
 	}
     }
 }
+#endif
 
+#if defined (COFFAARCH64)
+static void
+seh_aarch64_emit_epilog_scopes (const seh_context *seh_ctx,
+			      uint64_t fragment_offset,
+			      uint32_t prolog_size,
+			      unsigned int first_fragment_scope,
+			      unsigned int last_fragment_scope,
+			      bool has_phantom_prolog)
+{
+  int32_t start_index_offset = 0;
+  const
+  seh_aarch64_epilogue_scope *scopes = seh_ctx->aarch64_ctx.epilogue_scopes;
+  if (first_fragment_scope < seh_ctx->aarch64_ctx.epilogue_scopes_count)
+    start_index_offset = scopes[first_fragment_scope].epilogue_start_index
+			 - prolog_size;
+  if (has_phantom_prolog)
+    start_index_offset -= 1;
+  for (unsigned int i = first_fragment_scope; i < last_fragment_scope; ++i)
+    {
+      seh_aarch64_epilogue_scope scope;
+      scope = seh_ctx->aarch64_ctx.epilogue_scopes[i];
+      scope.epilogue_start_offset_reduced = (scope.epilogue_start_offset
+					    - fragment_offset) >> 2;
+      scope.epilogue_start_index -= start_index_offset;
+      uint32_t scope_code;
+      memcpy (&scope_code, &scope, sizeof (scope_code));
+      out_four (scope_code);
+    }
+}
+
+static void
+seh_aarch64_emit_unwind_codes (const seh_context *seh_ctx, 
+			     uint32_t prolog_size,
+			     uint32_t first_epilog_index,
+			     uint32_t last_epilog_index,
+			     bool has_phantom_prolog)
+{
+  uint32_t total_byte_count = 0;
+
+  if (has_phantom_prolog)
+    {
+      ++total_byte_count;
+      md_number_to_chars (frag_more (1), AARCH64_UNOP_ENDC, 1);
+    }
+
+  uint32_t unwind_bytes_offset = 0;
+  for (int i = 0; i < (int)seh_ctx->aarch64_ctx.unwind_codes_count; ++i)
+    {
+      const seh_aarch64_unwind_code *code = seh_ctx->aarch64_ctx.unwind_codes + i;
+      const int byte_count = aarch64_unwind_code_pack_data[code->type].size;
+      unwind_bytes_offset += byte_count;
+
+      if (unwind_bytes_offset > last_epilog_index)
+	break;
+
+      if (unwind_bytes_offset > prolog_size
+	  && unwind_bytes_offset <= first_epilog_index)
+	continue;
+
+      /*  emit unwind code bytes in big endian.  */
+      number_to_chars_bigendian (frag_more (byte_count), code->value,
+				 byte_count);
+      total_byte_count += byte_count;
+    }
+
+    /* handle word alignment.  */
+    int required_padding = (4 - total_byte_count % 4) % 4;
+    if (required_padding)
+      {
+	const uint32_t nop_chain = 0xe3e3e3e3;
+	md_number_to_chars (frag_more (required_padding), nop_chain,
+			    required_padding);
+      }
+}
+#endif
+
+#if !defined (COFFAARCH64)
 static int
 seh_x64_size_prologue_data (const seh_context *c)
 {
@@ -1320,6 +1415,212 @@ seh_x64_write_function_xdata (seh_context *c)
 }
 #endif
 
+#if defined (COFFAARCH64)
+/* Write out the xdata information for one function (aarch64).  */
+static void
+seh_aarch64_write_function_xdata (seh_context *seh_ctx)
+{
+  if (!seh_ctx->aarch64_ctx.unwind_codes_byte_count)
+    return;
+
+  /* Set 4-byte alignment.  */
+  frag_align (2, 0, 0);
+
+  fragS *start_frag, *end_frag;
+  addressT start_value, end_value;
+  start_frag = symbol_get_frag_and_value (seh_ctx->start_addr, &start_value);
+  end_frag = symbol_get_frag_and_value (seh_ctx->end_addr, &end_value);
+  offsetT offset;
+  frag_offset_ignore_align_p(end_frag, start_frag, &offset);
+  start_value += offset / OCTETS_PER_BYTE;
+  offset = end_value - start_value;
+
+  if (offset < 0)
+    {
+      as_bad (_("the function size expression for %s "
+	      "does not evaluate to a non-negative value"),
+	      S_GET_NAME (seh_ctx->start_addr));
+      return;
+    }
+
+  uintptr_t func_size = offset;
+
+  const uint32_t max_frag_size = ((1 << 18) - 1) << 2;
+  uintptr_t fragment_offset = 0;
+  bool is_fragmented_function = func_size > max_frag_size;
+
+  /* [first_fragment_scope, last_fragment_scope).  */
+  unsigned int first_fragment_scope = 0;
+  unsigned int last_fragment_scope = 0;
+  uint32_t prolog_size = 0;
+  uint32_t prolog_insruction_count = 0;
+  for (unsigned int i = 0; i < seh_ctx->aarch64_ctx.unwind_codes_count; ++i)
+    {
+      if (seh_ctx->aarch64_ctx.unwind_codes[i].type == end)
+	{
+	  prolog_insruction_count = i + 1;
+	  break;
+	}
+    }
+
+  if (seh_ctx->aarch64_ctx.epilogue_scopes_count)
+    prolog_size = seh_ctx->aarch64_ctx.epilogue_scopes[0].epilogue_start_index;
+  else
+    prolog_size = seh_ctx->aarch64_ctx.unwind_codes_byte_count;
+
+  seh_aarch64_func_fragment *fragment;
+  fragment = &seh_ctx->aarch64_ctx.func_fragment;
+  while (true)
+    {
+      fragment->xdata_addr = symbol_temp_new_now ();
+      fragment->offset = fragment_offset;
+      fragment->next = NULL;
+
+      uintptr_t frag_size = func_size - fragment_offset;
+      if (frag_size > max_frag_size)
+	frag_size = max_frag_size;
+
+      bool is_first_frag = fragment_offset == 0;
+      bool is_last_frag = (fragment_offset + frag_size) == func_size;
+
+      if (!is_fragmented_function)
+	last_fragment_scope = seh_ctx->aarch64_ctx.epilogue_scopes_count;
+      else
+	{
+	  first_fragment_scope = last_fragment_scope;
+	  for (unsigned int i = first_fragment_scope;
+	       i < seh_ctx->aarch64_ctx.epilogue_scopes_count; ++i)
+	    {
+	      const seh_aarch64_epilogue_scope *scope;
+	      scope = seh_ctx->aarch64_ctx.epilogue_scopes;
+	      scope += i;
+	      if (scope->epilogue_start_offset >= (fragment_offset + frag_size))
+		break;
+
+	      if (scope->epilogue_end_offset >= (fragment_offset + frag_size))
+		{
+		  frag_size = scope->epilogue_start_offset - fragment_offset;
+		  break;
+		}
+
+	      if (scope->epilogue_start_offset >= fragment_offset)
+		last_fragment_scope = i + 1;
+	    }
+	}
+
+      seh_aarch64_xdata_header *header = &seh_ctx->aarch64_ctx.xdata_header;
+      const
+      seh_aarch64_epilogue_scope *scopes = seh_ctx->aarch64_ctx.epilogue_scopes;
+
+      header->func_length = frag_size >> 2;
+      header->vers = 0;
+      header->e = 0;
+      header->code_words = 0;
+      header->epilogue_count = 0;
+
+      header->ext_code_words = 0;
+      header->ext_epilogue_count = last_fragment_scope
+					   - first_fragment_scope;
+      header->reserved = 0;
+
+      uint32_t first_epilog_index = 0;
+      uint32_t last_epilog_index = 0;
+      if (!header->ext_epilogue_count)
+	{
+	  first_epilog_index = prolog_size;
+	  last_epilog_index = prolog_size;
+	}
+      else
+	{
+	  const seh_aarch64_epilogue_scope *scope;
+	  scope = scopes + first_fragment_scope;
+	  first_epilog_index = scope->epilogue_start_index;
+	  if (last_fragment_scope == seh_ctx->aarch64_ctx.epilogue_scopes_count)
+	    last_epilog_index = seh_ctx->aarch64_ctx.unwind_codes_byte_count;
+	  else
+	    {
+	      scope = scopes + last_fragment_scope;
+	      last_epilog_index = scope->epilogue_start_index;
+	    }
+	}
+
+      uint32_t unwind_bytes = 0;
+      if (is_first_frag || is_last_frag)
+	unwind_bytes += prolog_size;
+
+      if (header->ext_epilogue_count)
+	unwind_bytes += last_epilog_index - first_epilog_index;
+
+      if (is_fragmented_function && is_last_frag && unwind_bytes)
+	{
+	  unwind_bytes += 1;
+	  ++header->ext_epilogue_count;
+	}
+
+      header->ext_code_words = (unwind_bytes  + 3) / 4;
+
+      if ((header->ext_code_words == 0 && header->ext_epilogue_count == 0)
+	  || header->ext_code_words > 31
+	  || header->ext_epilogue_count > 31)
+	md_number_to_chars (frag_more (8), seh_ctx->aarch64_ctx.xdata_header_value, 8);
+      else
+	{
+	  header->code_words = header->ext_code_words;
+	  header->epilogue_count = header->ext_epilogue_count;
+	  if (header->epilogue_count == 1)
+	    {
+	      header->e = 1;
+	      if (is_fragmented_function && is_last_frag)
+		header->ext_epilogue_count = 0;
+	      else
+		{
+		  const seh_aarch64_epilogue_scope *scope;
+		  scope = scopes + first_fragment_scope;
+		  header->ext_epilogue_count = scope->epilogue_start_index;
+		}
+	    }
+	  out_four (seh_ctx->aarch64_ctx.xdata_header_value);
+	}
+
+      bool has_phantom_prolog = is_fragmented_function && is_last_frag;
+      if (header->ext_epilogue_count && !header->e)
+	{
+	  seh_aarch64_emit_epilog_scopes (seh_ctx,
+					fragment_offset, prolog_size,
+					first_fragment_scope,
+					last_fragment_scope,
+					has_phantom_prolog);
+	  if (is_fragmented_function && is_last_frag)
+	    {
+	      uint32_t epilog_start_offset;
+	      epilog_start_offset = frag_size - prolog_insruction_count * 4;
+	      md_number_to_chars (frag_more (4),
+				  (1 << 22) | (epilog_start_offset >> 2), 4);
+	    }
+	}
+
+      if (header->ext_code_words)
+	seh_aarch64_emit_unwind_codes (seh_ctx, prolog_size, first_epilog_index,
+				     last_epilog_index, has_phantom_prolog);
+
+      if (header->x == 1)
+	{
+	  if (seh_ctx->handler.X_op == O_symbol)
+	    seh_ctx->handler.X_op = O_symbol_rva;
+
+	  emit_expr (&seh_ctx->handler, 4);
+	}
+
+      fragment_offset += frag_size;
+      if (fragment_offset == func_size)
+	break;
+
+      fragment->next = XCNEW (seh_aarch64_func_fragment);
+      fragment = fragment->next;
+    }
+}
+#endif
+
 /* Write out xdata for one function.  */
 
 static void
@@ -1328,13 +1629,19 @@ write_function_xdata (seh_context *c)
   segT save_seg = now_seg;
   int save_subseg = now_subseg;
 
+#if !defined (COFFAARCH64)
   /* MIPS, SH, ARM don't have xdata.  */
   if (seh_get_target_kind () != seh_kind_x64)
     return;
+#endif
 
   switch_xdata (c->subsection, c->code_seg);
 
+#if defined (COFFAARCH64)
+  seh_aarch64_write_function_xdata (c);
+#else
   seh_x64_write_function_xdata (c);
+#endif
 
   subseg_set (save_seg, save_subseg);
 }
@@ -1403,6 +1710,26 @@ write_function_pdata (seh_context *c)
   memset (&exp, 0, sizeof (expressionS));
   switch_pdata (c->code_seg);
 
+#if defined (COFFAARCH64)
+  if (c->aarch64_ctx.unwind_codes_byte_count)
+    {
+      seh_aarch64_func_fragment *fragment = &c->aarch64_ctx.func_fragment;
+      while (fragment)
+	{
+	  exp.X_op = O_symbol_rva;
+	  exp.X_add_number = fragment->offset;
+	  exp.X_add_symbol = c->start_addr;
+	  emit_expr(&exp, 4);
+
+	  exp.X_op = O_symbol_rva;
+	  /* TODO: Implementing packed unwind data.  */
+	  exp.X_add_number = 0;
+	  exp.X_add_symbol = fragment->xdata_addr;
+	  emit_expr(&exp, 4);
+	  fragment = fragment->next;
+	}
+    }
+#else
   switch (seh_get_target_kind ())
     {
     case seh_kind_x64:
@@ -1446,6 +1773,7 @@ write_function_pdata (seh_context *c)
     default:
       abort ();
     }
+#endif
 
   subseg_set (save_seg, save_subseg);
 }
