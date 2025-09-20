@@ -267,9 +267,13 @@ static const reloc_howto_type arm64_reloc_howto_branch26
 = HOW (IMAGE_REL_ARM64_BRANCH26,
        2, 4, 26, true, 0, signed, NULL, 0x3ffffff);
 
+/* On AArch64 COFF, a custom relocation, such as
+   coff_aarch64_rel21_reloc func, is used.
+   The reloc_howto_struct is not used in the usual way.
+   The mask is set to 0 to avoid issues during dynamic linking.  */
 static const reloc_howto_type arm64_reloc_howto_page21
 = HOW (IMAGE_REL_ARM64_PAGEBASE_REL21,
-       12, 4, 21, true, 0, signed, rel21_reloc, 0x1fffff);
+       12, 4, 21, true, 0, signed, rel21_reloc, 0);
 
 static const reloc_howto_type arm64_reloc_howto_lo21
 = HOW (IMAGE_REL_ARM64_REL21,
