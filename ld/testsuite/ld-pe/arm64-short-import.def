@@ -1,0 +1,4 @@
+; Used to generate arm64-short-import.lib.bz2 with MSVC link /Brepro.
+LIBRARY arm64-short-import.dll
+EXPORTS
+	test_reloc
