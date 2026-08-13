@@ -1836,6 +1836,9 @@ pe_print_edata (bfd * abfd, void * vfile)
    _IMAGE_ALPHA_RUNTIME_FUNCTION_ENTRY.
    See http://msdn2.microsoft.com/en-us/library/ms253988(VS.80).aspx .
 
+   On AArch64, a .pdata entry contains two dwords: the function start RVA
+   and either packed unwind data or the RVA of the corresponding .xdata.
+
    This is the version for uncompressed data.  */
 
 static bool
@@ -1843,6 +1846,8 @@ pe_print_pdata (bfd * abfd, void * vfile)
 {
 #if defined(COFF_WITH_pep) && !defined(COFF_WITH_pex64) && !defined(COFF_WITH_peAArch64) && !defined(COFF_WITH_peLoongArch64) && !defined (COFF_WITH_peRiscV64)
 # define PDATA_ROW_SIZE	(3 * 8)
+#elif defined(COFF_WITH_peAArch64)
+# define PDATA_ROW_SIZE	(2 * 4)
 #else
 # define PDATA_ROW_SIZE	(5 * 4)
 #endif
@@ -1872,6 +1877,10 @@ pe_print_pdata (bfd * abfd, void * vfile)
 #if defined(COFF_WITH_pep) && !defined(COFF_WITH_pex64) && !defined(COFF_WITH_peAArch64) && !defined(COFF_WITH_peLoongArch64) && !defined (COFF_WITH_peRiscV64)
   fprintf (file,
 	   _(" vma:\t\t\tBegin Address    End Address      Unwind Info\n"));
+#elif defined(COFF_WITH_peAArch64)
+  fprintf (file, _("\
+ vma:\t\tBegin    Unwind\n\
+     \t\tAddress  Data\n"));
 #else
   fprintf (file, _("\
  vma:\t\tBegin    End      EH       EH       PrologEnd  Exception\n\
@@ -1901,6 +1910,28 @@ pe_print_pdata (bfd * abfd, void * vfile)
 
   for (i = start; i < stop; i += onaline)
     {
+#if defined(COFF_WITH_peAArch64)
+      bfd_vma begin_addr;
+      bfd_vma unwind_data;
+
+      if (i + PDATA_ROW_SIZE > stop)
+	break;
+
+      begin_addr = GET_PDATA_ENTRY (abfd, data + i);
+      unwind_data = GET_PDATA_ENTRY (abfd, data + i + 4);
+
+      if (begin_addr == 0 && unwind_data == 0)
+	/* We are probably into the padding of the section now.  */
+	break;
+
+      fputc (' ', file);
+      bfd_fprintf_vma (abfd, file, i + section->vma);
+      fputc ('\t', file);
+      bfd_fprintf_vma (abfd, file, begin_addr);
+      fputc (' ', file);
+      bfd_fprintf_vma (abfd, file, unwind_data);
+      fprintf (file, "\n");
+#else
       bfd_vma begin_addr;
       bfd_vma end_addr;
       bfd_vma eh_handler;
@@ -1942,6 +1973,7 @@ pe_print_pdata (bfd * abfd, void * vfile)
       fprintf (file, "   %x", em_data);
 #endif
       fprintf (file, "\n");
+#endif
     }
 
   free (data);
