@@ -734,11 +734,13 @@ static const jump_table jtab[] =
 #endif
 
 #ifdef AARCH64MAGIC
-/* We don't currently support jumping to DLLs, so if
-   someone does try emit a runtime trap.  Through UDF #0.  */
   { AARCH64MAGIC,
-    { 0x00, 0x00, 0x00, 0x00 },
-    4, 0
+    { 0x10, 0x00, 0x00, 0x90, /* adrp x16, 0        */
+      0x10, 0x02, 0x00, 0x91, /* add x16, x16, #0x0 */
+      0x10, 0x02, 0x40, 0xf9, /* ldr x16, [x16]     */
+      0x00, 0x02, 0x1f, 0xd6  /* br x16             */
+    },
+    16, 0
   },
 
 #endif
@@ -1056,6 +1058,18 @@ pe_ILF_build_a_bfd (bfd *	    abfd,
 	  pe_ILF_make_a_symbol_reloc (&vars, (bfd_vma) 4, BFD_RELOC_LO16,
 				      (struct bfd_symbol **) imp_sym,
 				      imp_index);
+	}
+      else
+#endif
+#ifdef AARCH64MAGIC
+      if (magic == AARCH64MAGIC)
+	{
+	  pe_ILF_make_a_symbol_reloc
+	    (&vars, (bfd_vma) 0, BFD_RELOC_AARCH64_ADR_HI21_NC_PCREL,
+	     (asymbol **) imp_sym, imp_index);
+	  pe_ILF_make_a_symbol_reloc
+	    (&vars, (bfd_vma) 4, BFD_RELOC_AARCH64_ADD_LO12,
+	     (asymbol **) imp_sym, imp_index);
 	}
       else
 #endif

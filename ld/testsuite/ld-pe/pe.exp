@@ -110,10 +110,15 @@ if {[istarget i*86-*-cygwin*]
 
 if {[istarget "aarch64-*-pe*"] || [istarget "aarch64-*-mingw*"]} {
     run_dump_test "pe-aarch64"
+    run_dump_test "arm64-addr32-overflow"
 
     set pe_tests {
       {"aarch64" "--image-base 0x1000" "" "" {aarch64a.s aarch64b.s}
 	{{objdump -dr aarch64.d}} "aarch64.x"}
+      {"AArch64 MSVC short import"
+	"--entry _start --subsystem console" "" ""
+	{arm64-short-import.s arm64-short-import.lib.bz2}
+	{{objdump -d arm64-short-import.d}} "arm64-short-import.exe"}
       {".secrel32" "--disable-reloc-section" "" "" {secrel1.s secrel2.s}
 	{{objdump -s secrel_64.d}} "secrel.x"}
       {".secidx" "--disable-reloc-section" "" "" {secidx1.s secidx2.s}
