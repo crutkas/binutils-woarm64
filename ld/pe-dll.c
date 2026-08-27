@@ -39,6 +39,9 @@
 #include "ldfile.h"
 #include "ldemul.h"
 #include "coff/internal.h"
+#if defined (COFF_WITH_peAArch64)
+# include "coff/aarch64.h"
+#endif
 #include "../bfd/libcoff.h"
 #include "deffile.h"
 
@@ -2857,33 +2860,48 @@ pe_create_runtime_relocator_reference (bfd *parent)
 
 #if defined (COFF_WITH_peAArch64)
 static void
-aarch64_make_jump_stub(const char* symbol_name, bfd* parent)
+aarch64_make_import_marker (arelent *rel, const char *marker_name)
+{
+  struct bfd_symbol *sym = *rel->sym_ptr_ptr;
+  bfd *abfd = bfd_asymbol_bfd (sym);
+  struct bfd_link_hash_entry *bh = NULL;
+
+  if (!bfd_coff_link_add_one_symbol (&link_info, abfd, marker_name, BSF_GLOBAL,
+				     current_sec, rel->address, NULL, true,
+				     false, &bh))
+    einfo (_("%F%P: cannot create AArch64 auto-import marker `%s': %E\n"),
+	   marker_name);
+}
+
+static void
+aarch64_make_jump_stub (const char *symbol_name, bfd *parent)
 {
   static struct bfd_hash_table *stub_hash = NULL;
-  if (!stub_hash) {
-    stub_hash = (struct bfd_hash_table *) xmalloc (sizeof (struct bfd_hash_table));
-    bfd_hash_table_init (stub_hash, bfd_hash_newfunc, sizeof (struct bfd_hash_entry));
-  }
+
+  if (!stub_hash)
+    {
+      stub_hash = (struct bfd_hash_table *) xmalloc (sizeof (*stub_hash));
+      if (!bfd_hash_table_init (stub_hash, bfd_hash_newfunc,
+				sizeof (struct bfd_hash_entry)))
+	einfo (_("%F%P: bfd_hash_table_init failed: %E\n"));
+    }
 
   if (pe_dll_extra_pe_debug)
     printf ("validate jump stub for %s\n", symbol_name);
 
-  if (bfd_hash_lookup(stub_hash, symbol_name, false, false))
+  if (bfd_hash_lookup (stub_hash, symbol_name, false, false))
     return;
 
   if (pe_dll_extra_pe_debug)
     printf ("creating jump stub for %s\n", symbol_name);
-  bfd_hash_lookup(stub_hash, symbol_name, true, true);
+  bfd_hash_lookup (stub_hash, symbol_name, true, true);
 
   asection *tx;
-  unsigned char *td = NULL;
+  unsigned char *td;
   char *oname;
   bfd *abfd;
-  const unsigned char *jmp_bytes = NULL;
-  int jmp_byte_count = 0;
-  jmp_bytes = jmp_aarch64_bytes;
-  jmp_byte_count = sizeof (jmp_aarch64_bytes);
-  static int tmp_stub_seq = 0;
+  const unsigned int jmp_byte_count = sizeof (jmp_aarch64_bytes);
+  static unsigned int tmp_stub_seq;
 
   oname = xasprintf ("jump_stub_d%06d.o", tmp_stub_seq);
   ++tmp_stub_seq;
@@ -2898,7 +2916,8 @@ aarch64_make_jump_stub(const char* symbol_name, bfd* parent)
   symptr = 0;
   symtab = xmalloc (12 * sizeof (asymbol *));
 
-  tx  = quick_section (abfd, ".text", SEC_CODE | SEC_HAS_CONTENTS | SEC_READONLY, 2);
+  tx = quick_section (abfd, ".text",
+		      SEC_CODE | SEC_HAS_CONTENTS | SEC_READONLY, 2);
   quick_symbol (abfd, "", symbol_name, "", tx, BSF_GLOBAL, 0);
   quick_symbol (abfd, "__imp_", symbol_name, "", bfd_und_section_ptr,
 		BSF_GLOBAL, 0);
@@ -2906,7 +2925,7 @@ aarch64_make_jump_stub(const char* symbol_name, bfd* parent)
   bfd_set_section_size (tx, jmp_byte_count);
   td = xmalloc (jmp_byte_count);
   tx->contents = td;
-  memcpy (td, jmp_bytes, jmp_byte_count);
+  memcpy (td, jmp_aarch64_bytes, jmp_byte_count);
 
   quick_reloc (abfd, 0, BFD_RELOC_AARCH64_ADR_HI21_NC_PCREL, 2);
   quick_reloc (abfd, 4, BFD_RELOC_AARCH64_ADD_LO12, 2);
@@ -2918,12 +2937,164 @@ aarch64_make_jump_stub(const char* symbol_name, bfd* parent)
   bfd_make_readable (abfd);
   add_bfd_to_link (abfd, bfd_get_filename (abfd), &link_info);
 }
+
+static void
+aarch64_make_import_stub (const char *imp_symbol_name,
+			  const char *stub_name,
+			  int32_t page_addend,
+			  unsigned int reg,
+			  const char *caller_label,
+			  bfd *parent)
+{
+  static const unsigned char stub_bytes[] =
+    {
+      0x00, 0x00, 0x00, 0x90, /* adrp x0, <imp_symbol_name> */
+      0x00, 0x00, 0x40, 0xf9, /* ldr  x0, [x0, :lo12:<imp_symbol_name>] */
+      0x00, 0x00, 0x40, 0x91, /* add  x0, x0, #0, lsl #12 */
+      0x01, 0x00, 0x00, 0x14  /* b    <caller_label> + 4 */
+    };
+  static unsigned int tmp_stub_seq;
+  const unsigned int byte_count = sizeof (stub_bytes);
+  bfd_byte *contents;
+  uint32_t insn;
+  uint32_t page_count;
+  asection *text;
+  char *oname;
+  bfd *abfd;
+
+  if (pe_dll_extra_pe_debug)
+    printf ("creating AArch64 auto-import stub %s for %s "
+	    "(addend=%d, register=%u)\n",
+	    stub_name, imp_symbol_name, page_addend, reg);
+
+  oname = xasprintf ("import_stub_d%06d.o", tmp_stub_seq++);
+  abfd = bfd_create (oname, parent);
+  free (oname);
+  bfd_make_writable (abfd);
+
+  bfd_set_format (abfd, bfd_object);
+  bfd_set_arch_mach (abfd, pe_details->bfd_arch, 0);
+
+  symptr = 0;
+  symtab = xmalloc (12 * sizeof (asymbol *));
+
+  text = quick_section (abfd, ".text",
+			SEC_CODE | SEC_HAS_CONTENTS | SEC_READONLY, 2);
+  quick_symbol (abfd, "", stub_name, "", text, BSF_GLOBAL, 0);
+  quick_symbol (abfd, "", imp_symbol_name, "", UNDSEC, BSF_GLOBAL, 0);
+  quick_symbol (abfd, "", caller_label, "", UNDSEC, BSF_GLOBAL, 0);
+
+  bfd_set_section_size (text, byte_count);
+  contents = xmalloc (byte_count);
+  text->contents = contents;
+  memcpy (contents, stub_bytes, byte_count);
+
+  reg &= 0x1f;
+  insn = bfd_getl32 (contents);
+  bfd_putl32 (insn | reg, contents);
+  insn = bfd_getl32 (contents + 4);
+  bfd_putl32 (insn | (reg << 5) | reg, contents + 4);
+  insn = bfd_getl32 (contents + 8);
+  insn |= (reg << 5) | reg;
+
+  if (page_addend < 0)
+    {
+      /* The preserved low12 instruction supplies the positive remainder.
+	 Round up only when the magnitude is not page aligned.  */
+      page_count = ((uint32_t) -page_addend + 4095) >> 12;
+      insn |= 1u << 30; /* ADD -> SUB.  */
+    }
+  else
+    page_count = (uint32_t) page_addend >> 12;
+
+  if (page_count > 0xfff)
+    einfo (_("%F%P: AArch64 auto-import addend is out of range\n"));
+
+  bfd_putl32 (insn | (page_count << 10), contents + 8);
+
+  quick_reloc (abfd, 0, BFD_RELOC_AARCH64_ADR_HI21_PCREL, 2);
+  quick_reloc (abfd, 4, BFD_RELOC_AARCH64_LDST64_LO12, 2);
+  quick_reloc (abfd, 12, BFD_RELOC_AARCH64_CALL26, 3);
+  save_relocs (text);
+
+  bfd_set_symtab (abfd, symtab, symptr);
+  bfd_set_section_contents (abfd, text, contents, 0, byte_count);
+  bfd_make_readable (abfd);
+  add_bfd_to_link (abfd, bfd_get_filename (abfd), &link_info);
+}
 #endif
 
 void
 pe_create_import_fixup (arelent *rel, asection *s, bfd_vma addend, char *name,
 			const char *symname)
 {
+#if defined (COFF_WITH_peAArch64)
+  if (pe_details->pe_arch == PE_ARCH_aarch64)
+    {
+      switch (rel->howto->type)
+	{
+	case IMAGE_REL_ARM64_PAGEOFFSET_12A:
+	case IMAGE_REL_ARM64_PAGEOFFSET_12L:
+	  {
+	    char *marker_name;
+
+	    marker_name = xasprintf ("__aarch64_auto_import_%s_%x_%lx",
+				     name, current_sec->id,
+				     (long unsigned int) rel->address);
+	    aarch64_make_import_marker (rel, marker_name);
+	    free (marker_name);
+	    return;
+	  }
+
+	case IMAGE_REL_ARM64_BRANCH26:
+	  /* A single opcode cannot load an imported function address.  */
+	  aarch64_make_jump_stub (name, s->owner);
+	  return;
+
+	case IMAGE_REL_ARM64_REL21:
+	  einfo (_("%F%P: %H: AArch64 REL21 auto-import relocation is unsupported\n"),
+		 s->owner, s, rel->address);
+	  return;
+
+	case IMAGE_REL_ARM64_PAGEBASE_REL21:
+	  {
+	  bfd_byte buf[4];
+	  uint32_t opcode;
+	  int32_t page_addend;
+	  unsigned int reg;
+	  char *imp_name;
+	  char *stub_name;
+	  const char *caller_label;
+
+	  if (!bfd_get_section_contents (s->owner, s, buf, rel->address, 4))
+	    einfo (_("%F%P: %H: cannot read AArch64 auto-import relocation\n"),
+		   s->owner, s, rel->address);
+
+	  opcode = bfd_getl32 (buf);
+	  page_addend = (opcode >> 5) & 0x7ffff;
+	  page_addend = (page_addend << 2) | ((opcode >> 29) & 3);
+	  if (page_addend & (1 << 20))
+	    page_addend |= ~((1 << 21) - 1);
+
+	  imp_name = xasprintf ("__imp_%s", name);
+	  stub_name = xasprintf ("%s_%x_%lx", imp_name, current_sec->id,
+				 (long unsigned int) rel->address);
+	  caller_label = make_import_fixup_mark (rel, name);
+	  reg = opcode & 0x1f;
+	  aarch64_make_import_stub (imp_name, stub_name, page_addend, reg,
+				    caller_label, s->owner);
+
+	  free (stub_name);
+	  free (imp_name);
+	  return;
+	  }
+
+	default:
+	  break;
+	}
+    }
+#endif
+
   const char *fixup_name = make_import_fixup_mark (rel, name);
   bfd *b;
 
@@ -2963,17 +3134,6 @@ pe_create_import_fixup (arelent *rel, asection *s, bfd_vma addend, char *name,
   if ((addend != 0 && link_info.pei386_runtime_pseudo_reloc == 1)
       || link_info.pei386_runtime_pseudo_reloc == 2)
     {
-#if defined (COFF_WITH_peAArch64)
-
-      if (rel->howto->bitsize == 26)
-	{
-/* On AArch64, a single opcode is not sufficient for relocation
-   in dynamic linking. The linker generates a jump stub instead.  */
-	  aarch64_make_jump_stub(name, s->owner);
-	  return;
-	}
-#endif
-
       if (pe_dll_extra_pe_debug)
 	printf ("creating runtime pseudo-reloc entry for %s (addend=%d)\n",
 		fixup_name, (int) addend);

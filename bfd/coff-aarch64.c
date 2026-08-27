@@ -531,10 +531,82 @@ coff_pe_aarch64_relocate_section (bfd *output_bfd,
 
       h = obj_coff_sym_hashes (input_bfd)[symndx];
 
-      if (h && h->root.type == bfd_link_hash_defined)
+      if (h && h->root.type == bfd_link_hash_defweak)
+	switch (rel->r_type)
+	  {
+	  case IMAGE_REL_ARM64_PAGEOFFSET_12A:
+	  case IMAGE_REL_ARM64_PAGEOFFSET_12L:
+	    {
+	      char *marker_name;
+	      struct bfd_link_hash_entry *marker;
+
+	      marker_name = xasprintf ("__aarch64_auto_import_%s_%x_%lx",
+				       h->root.root.string,
+				       input_section->id,
+				       (long unsigned int) rel->r_vaddr);
+	      marker = bfd_link_hash_lookup (info->hash, marker_name,
+					     false, false, true);
+	      free (marker_name);
+
+	      if (marker != NULL && marker->type == bfd_link_hash_defined)
+		{
+		  /* The PAGEBASE stub loads the runtime symbol address.
+		     Preserve the instruction's low 12-bit semantic addend.  */
+		  rel->r_vaddr = -1;
+		  continue;
+		}
+	      break;
+	    }
+
+	  case IMAGE_REL_ARM64_PAGEBASE_REL21:
+	    {
+	      char *stub_name;
+	      struct coff_link_hash_entry *stub;
+
+	      stub_name = xasprintf ("__imp_%s_%x_%lx",
+				     h->root.root.string,
+				     input_section->id,
+				     (long unsigned int) rel->r_vaddr);
+	      stub = (struct coff_link_hash_entry *)
+		bfd_link_hash_lookup (info->hash, stub_name, false, false, true);
+	      free (stub_name);
+
+	      if (stub == NULL || stub->root.type != bfd_link_hash_defined)
+		break;
+
+	      bfd_putl32 (0x14000000, contents + rel->r_vaddr);
+	      rel->r_type = IMAGE_REL_ARM64_BRANCH26;
+	      h = stub;
+	      break;
+	    }
+
+	  default:
+	    break;
+	  }
+
+      if (h && (h->root.type == bfd_link_hash_defined
+	|| h->root.type == bfd_link_hash_defweak))
 	{
 	  sec = h->root.u.def.section;
 	  sym_value = h->root.u.def.value;
+	}
+      else if (h && h->root.type == bfd_link_hash_undefweak
+	&& h->symbol_class == C_NT_WEAK && h->numaux == 1)
+	{
+	  struct coff_link_hash_entry *h2;
+	  h2 = h->auxbfd->tdata.coff_obj_data->sym_hashes
+	       [h->aux->x_sym.x_tagndx.u32];
+
+	  if (!h2 || h2->root.type == bfd_link_hash_undefined)
+	  {
+	    sec = bfd_abs_section_ptr;
+	    sym_value = 0;
+	  }
+	  else
+	  {
+	    sec = h2->root.u.def.section;
+	    sym_value = h2->root.u.def.value;
+	  }
 	}
       else
 	{
@@ -1094,4 +1166,3 @@ const bfd_target
   &bigobj_swap_table
 };
 #endif
-
