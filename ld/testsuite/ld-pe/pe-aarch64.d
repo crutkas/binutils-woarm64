@@ -1,4 +1,4 @@
-#ld:
+#ld: --image-base 0x140000000
 #objdump: -d
 
 .*:     file format pei-aarch64-little

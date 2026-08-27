@@ -106,9 +106,12 @@ if {[istarget i*86-*-cygwin*]
     }
 
     run_ld_link_tests $pe_tests
+
 }
 
-if {[istarget "aarch64-*-pe*"] || [istarget "aarch64-*-mingw*"]} {
+if {[istarget "aarch64-*-pe*"]
+    || [istarget "aarch64-*-mingw*"]
+    || [istarget "aarch64-*-cygwin*"]} {
     run_dump_test "pe-aarch64"
 
     set pe_tests {
@@ -121,6 +124,46 @@ if {[istarget "aarch64-*-pe*"] || [istarget "aarch64-*-mingw*"]} {
     }
 
     run_ld_link_tests $pe_tests
+
+    set auto_import_aarch64_test "AArch64 auto-import stubs"
+    if { [ld_assemble $as $srcdir/$subdir/auto-import-dll-aarch64.s tmpdir/auto-import-dll-aarch64.o]
+	 && [ld_assemble $as $srcdir/$subdir/auto-import-aarch64.s tmpdir/auto-import-aarch64.o]
+	 && [ld_assemble $as $srcdir/$subdir/auto-import-aarch64-dup.s tmpdir/auto-import-aarch64-dup.o]
+	 && [ld_link $ld "tmpdir/auto-import-dll-aarch64.dll" "-shared tmpdir/auto-import-dll-aarch64.o --out-implib tmpdir/libauto-import-dll-aarch64.a"]
+	 && [ld_link $ld "tmpdir/auto-import-aarch64.exe" "tmpdir/auto-import-aarch64.o tmpdir/auto-import-aarch64-dup.o tmpdir/libauto-import-dll-aarch64.a --section-start=.idata=0x1c0000000"]
+	 && [regexp [file_contents "$srcdir/$subdir/auto-import-aarch64.d"] [run_host_cmd "$objdump" "-d tmpdir/auto-import-aarch64.exe"]]
+	 && [regexp "00004091" [run_host_cmd "$objdump" "-s -j .text tmpdir/auto-import-aarch64.exe"]]
+	 && ![regexp "\\.rdata_runtime_pseudo_reloc" [run_host_cmd "$objdump" "-h tmpdir/auto-import-aarch64.exe"]] } {
+	pass $auto_import_aarch64_test
+    } else {
+	fail $auto_import_aarch64_test
+    }
+
+    set auto_import_aarch64_adr_test "AArch64 REL21 auto-import fails closed"
+    if { [ld_assemble $as $srcdir/$subdir/auto-import-aarch64-adr.s tmpdir/auto-import-aarch64-adr.o]
+	 && ![ld_link $ld "tmpdir/auto-import-aarch64-adr.exe" "tmpdir/auto-import-aarch64-adr.o tmpdir/libauto-import-dll-aarch64.a"]
+	 && [regexp "AArch64 REL21 auto-import relocation is unsupported" $exec_output] } {
+	pass $auto_import_aarch64_adr_test
+    } else {
+	fail $auto_import_aarch64_adr_test
+    }
+
+    set auto_import_aarch64_adrp_range_test "AArch64 auto-import ADRP range fails closed"
+    if { ![ld_link $ld "tmpdir/auto-import-aarch64-adrp-range.exe" "tmpdir/auto-import-aarch64.o tmpdir/libauto-import-dll-aarch64.a --section-start=.idata=0x240000000"]
+	 && [regexp "relocation truncated to fit: IMAGE_REL_ARM64_PAGEBASE_REL21" $exec_output] } {
+	pass $auto_import_aarch64_adrp_range_test
+    } else {
+	fail $auto_import_aarch64_adrp_range_test
+    }
+
+    set auto_import_aarch64_branch_range_test "AArch64 auto-import branch range fails closed"
+    if { [ld_assemble $as $srcdir/$subdir/auto-import-aarch64-branch-range.s tmpdir/auto-import-aarch64-branch-range.o]
+	 && ![ld_link $ld "tmpdir/auto-import-aarch64-branch-range.exe" "tmpdir/auto-import-aarch64-branch-range.o tmpdir/libauto-import-dll-aarch64.a --section-start=.farconsumer=0x150000000"]
+	 && [regexp "relocation truncated to fit: IMAGE_REL_ARM64_BRANCH26" $exec_output] } {
+	pass $auto_import_aarch64_branch_range_test
+    } else {
+	fail $auto_import_aarch64_branch_range_test
+    }
 }
 
 run_dump_test "image_size"
