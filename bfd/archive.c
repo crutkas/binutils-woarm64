@@ -2233,13 +2233,51 @@ _bfd_write_archive_contents (bfd *arch)
        current = current->archive_next)
     {
       bfd_size_type remaining = arelt_size (current);
+      FILE *from_file = NULL;
 
       /* Write ar header.  */
       if (!_bfd_write_ar_hdr (arch, current))
 	goto input_err;
       if (bfd_is_thin_archive (arch))
 	continue;
-      if (bfd_seek (current, 0, SEEK_SET) != 0)
+
+      /* An archive member is copied into the archive byte for byte from
+	 whatever it was read from.  For a member that lives in the file
+	 system that source is the file, but checking a member's format
+	 above can replace its iostream with a synthesized in-memory image
+	 that is not the file's contents at all.  peicode.h does exactly
+	 that for a short import (ILF) object: pe_ILF_build_a_bfd discards
+	 the file and substitutes a much larger generated COFF image, so
+	 reading through the member BFD here would copy that generated
+	 buffer -- and only the leading arelt_size bytes of it -- into the
+	 archive in place of the real object.  The result is a member whose
+	 header length is right but whose contents are unrelated bytes, so
+	 the ILF signature is gone and the member no longer has a
+	 recognisable file format.
+
+	 Copy from the file itself whenever the member has been switched to
+	 an in-memory image yet still names a file whose size is exactly the
+	 length recorded in the header, which is the length that was taken
+	 from that file before any format check ran.  */
+      if ((current->flags & BFD_IN_MEMORY) != 0
+	  && current->my_archive == NULL
+	  && bfd_get_filename (current) != NULL)
+	{
+	  struct stat st;
+
+	  if (stat (bfd_get_filename (current), &st) == 0
+	      && (bfd_size_type) st.st_size == remaining)
+	    {
+	      from_file = _bfd_real_fopen (bfd_get_filename (current), FOPEN_RB);
+	      if (from_file == NULL)
+		{
+		  bfd_set_error (bfd_error_system_call);
+		  goto input_err;
+		}
+	    }
+	}
+
+      if (from_file == NULL && bfd_seek (current, 0, SEEK_SET) != 0)
 	goto input_err;
 
       while (remaining)
@@ -2249,12 +2287,28 @@ _bfd_write_archive_contents (bfd *arch)
 	  if (amt > remaining)
 	    amt = remaining;
 	  errno = 0;
-	  if (bfd_read (buffer, amt, current) != amt)
+	  if (from_file != NULL)
+	    {
+	      if (fread (buffer, 1, amt, from_file) != amt)
+		{
+		  fclose (from_file);
+		  bfd_set_error (bfd_error_system_call);
+		  goto input_err;
+		}
+	    }
+	  else if (bfd_read (buffer, amt, current) != amt)
 	    goto input_err;
 	  if (bfd_write (buffer, amt, arch) != amt)
-	    goto input_err;
+	    {
+	      if (from_file != NULL)
+		fclose (from_file);
+	      goto input_err;
+	    }
 	  remaining -= amt;
 	}
+
+      if (from_file != NULL)
+	fclose (from_file);
 
       if ((arelt_size (current) % 2) == 1)
 	{

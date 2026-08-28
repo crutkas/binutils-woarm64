@@ -180,6 +180,12 @@ if {[istarget "aarch64-*-pe*"]
 
     run_ld_link_tests $pe_tests
 
+    # A short import (ILF) object: the 20 byte ILF header followed by the
+    # imported symbol name and the source DLL name.  BFD does not keep
+    # these bytes when it opens such a file -- pe_ILF_build_a_bfd throws
+    # the file away and substitutes a synthesized in-memory COFF image
+    # describing the import thunk -- which is what made this object a
+    # regression test for the archive writer as well as for the thunk.
     set short_import_object "tmpdir/aarch64-short-import.obj"
     set short_import_archive "tmpdir/libaarch64-short-import.a"
     set short_import_file [open $short_import_object "wb"]
@@ -188,6 +194,37 @@ if {[istarget "aarch64-*-pe*"]
       "0000ffff000064aa000000001700000000000400"]
     puts -nonewline $short_import_file "short_import\x00short.dll\x00"
     close $short_import_file
+
+    # An ILF object placed in an archive must reach the linker unchanged.
+    # bfd/archive.c copies each member byte for byte out of the BFD it was
+    # read from, but building the archive symbol map calls
+    # bfd_check_format on every member, and for an ILF object that
+    # replaces the member's iostream with the generated image described
+    # above.  Copying through the member then wrote the leading bytes of
+    # that generated image into the archive instead of the object, so the
+    # member lost its 00 00 ff ff ILF signature and ld rejected the whole
+    # archive with "file format not recognized".  Check the stored bytes
+    # directly, before any link, so that a regression is reported as the
+    # archive defect it is rather than as a link failure.
+    if {[ar_simple_create $ar "" $short_import_archive $short_import_object]} {
+	set orig [open $short_import_object "rb"]
+	fconfigure $orig -translation binary -encoding binary
+	set orig_bytes [read $orig]
+	close $orig
+
+	set archived [open $short_import_archive "rb"]
+	fconfigure $archived -translation binary -encoding binary
+	set archive_bytes [read $archived]
+	close $archived
+
+	if {[string first $orig_bytes $archive_bytes] >= 0} {
+	    pass "AArch64 short import object survives archiving"
+	} else {
+	    fail "AArch64 short import object survives archiving"
+	}
+    } else {
+	unresolved "AArch64 short import object survives archiving"
+    }
 
     if {[ar_simple_create $ar "" $short_import_archive $short_import_object]} {
 	run_ld_link_tests [list [list \
