@@ -2258,7 +2258,24 @@ _bfd_write_archive_contents (bfd *arch)
 	 Copy from the file itself whenever the member has been switched to
 	 an in-memory image yet still names a file whose size is exactly the
 	 length recorded in the header, which is the length that was taken
-	 from that file before any format check ran.  */
+	 from that file before any format check ran.
+
+	 Known scope limit.  Requiring my_archive == NULL confines this to
+	 members that did not come from an already-open archive, so it
+	 repairs the ar creation flows (cr, Dcr, r) but not the ranlib
+	 rewrite, ar q append or ar d delete flows, which reach their
+	 members through an opened archive.  ILF substitution in
+	 pe_bfd_object_p/pe_ILF_object_p keys only on the leading 0000ffff
+	 magic and is independent of my_archive, so those flows still
+	 corrupt an ILF member -- as they already do without this change.
+	 This is therefore incomplete coverage of a pre-existing defect
+	 rather than a new one; repairing them needs the substitution
+	 itself to stop discarding the file, which is left to separate work.
+
+	 The stat and the subsequent open are not atomic, so a member file
+	 replaced in between could be copied in its new form.  That window
+	 is not exploited by any flow here, where the file was read moments
+	 earlier to build the header.  */
       if ((current->flags & BFD_IN_MEMORY) != 0
 	  && current->my_archive == NULL
 	  && bfd_get_filename (current) != NULL)
