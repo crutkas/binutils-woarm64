@@ -2287,7 +2287,14 @@ _bfd_write_archive_contents (bfd *arch)
 	 The stat and the subsequent open are not atomic, so a member file
 	 replaced in between could be copied in its new form.  That window
 	 is not exploited by any flow here, where the file was read moments
-	 earlier to build the header.  */
+	 earlier to build the header.
+
+	 Comparing two archives byte for byte, as a caller might do to check
+	 this code against an older ar, needs the D flag.  Two timestamps
+	 vary independently without it: the armap member's, which is the
+	 moment of generation, so an archive carrying a symbol map differs
+	 between runs even when every input is unchanged, and each real
+	 member's, which is that file's mtime.  D zeroes both.  */
       if ((current->flags & BFD_IN_MEMORY) != 0
 	  && current->my_archive == NULL
 	  && bfd_get_filename (current) != NULL)
