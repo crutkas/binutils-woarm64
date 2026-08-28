@@ -2276,6 +2276,14 @@ _bfd_write_archive_contents (bfd *arch)
 	 rather than a new one; repairing them needs the substitution
 	 itself to stop discarding the file, which is left to separate work.
 
+	 Note for anyone changing this: the ld-pe regression test that
+	 covers the repaired case builds its archive with ar_simple_create,
+	 which is ar rc, so the test suite only ever exercises the
+	 newly-added provenance.  Nothing in ld/testsuite/ld-pe/pe.exp runs
+	 ranlib or ar q, r or d, so a green suite says nothing either way
+	 about the rewrite paths described above; they were measured by
+	 hand.  Any fix for them needs its own coverage.
+
 	 The stat and the subsequent open are not atomic, so a member file
 	 replaced in between could be copied in its new form.  That window
 	 is not exploited by any flow here, where the file was read moments
