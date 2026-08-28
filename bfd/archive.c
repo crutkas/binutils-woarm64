@@ -2291,10 +2291,17 @@ _bfd_write_archive_contents (bfd *arch)
 
 	 Comparing two archives byte for byte, as a caller might do to check
 	 this code against an older ar, needs the D flag.  Two timestamps
-	 vary independently without it: the armap member's, which is the
+	 vary independently without it.  The symbol map member's date is the
 	 moment of generation, so an archive carrying a symbol map differs
-	 between runs even when every input is unchanged, and each real
-	 member's, which is that file's mtime.  D zeroes both.  */
+	 between runs even when every input is unchanged; for COFF that date
+	 is a plain time (NULL) in _bfd_coff_write_armap, which is what
+	 BFD_JUMP_TABLE_ARCHIVE (_bfd_archive_coff) selects here, not the
+	 archive mtime plus ARMAP_TIME_OFFSET that _bfd_bsd_write_armap
+	 uses.  Each real member's date is that file's own mtime and is
+	 stable across runs.  D zeroes the map date; the COFF writer already
+	 hardcodes the map uid and gid to zero either way.  An archive with
+	 no symbol map, from rcS or from members that define no symbols, is
+	 reproducible without D.  */
       if ((current->flags & BFD_IN_MEMORY) != 0
 	  && current->my_archive == NULL
 	  && bfd_get_filename (current) != NULL)
