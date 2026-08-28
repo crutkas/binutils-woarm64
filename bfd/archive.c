@@ -2261,13 +2261,17 @@ _bfd_write_archive_contents (bfd *arch)
 	 from that file before any format check ran.
 
 	 Known scope limit.  Requiring my_archive == NULL confines this to
-	 members that did not come from an already-open archive, so it
-	 repairs the ar creation flows (cr, Dcr, r) but not the ranlib
-	 rewrite, ar q append or ar d delete flows, which reach their
-	 members through an opened archive.  ILF substitution in
+	 members that did not come from an already-open archive.  What
+	 decides the outcome is therefore the member's provenance, not the
+	 ar subcommand: an ILF object being newly added is repaired, whether
+	 by cr, Dcr, r or q, while an ILF member that merely happens to be
+	 sitting in an archive that is being rewritten for some other reason
+	 -- q appending a different member, r replacing one, d deleting one,
+	 or ranlib regenerating the index -- is still reached through the
+	 opened archive and is still corrupted.  ILF substitution in
 	 pe_bfd_object_p/pe_ILF_object_p keys only on the leading 0000ffff
-	 magic and is independent of my_archive, so those flows still
-	 corrupt an ILF member -- as they already do without this change.
+	 magic and is independent of my_archive, so those rewrite paths
+	 remain broken exactly as they already were without this change.
 	 This is therefore incomplete coverage of a pre-existing defect
 	 rather than a new one; repairing them needs the substitution
 	 itself to stop discarding the file, which is left to separate work.
