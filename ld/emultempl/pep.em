@@ -1160,30 +1160,25 @@ read_addend (arelent *rel, asection *s)
   bfd_vma addend = 0;
   bool ok = false;
 
+#if defined (COFF_WITH_peAArch64)
+  switch (rel->howto->type)
+    {
+    case IMAGE_REL_ARM64_BRANCH26:
+    case IMAGE_REL_ARM64_PAGEBASE_REL21:
+    case IMAGE_REL_ARM64_REL21:
+    case IMAGE_REL_ARM64_PAGEOFFSET_12A:
+    case IMAGE_REL_ARM64_PAGEOFFSET_12L:
+    case IMAGE_REL_ARM64_BRANCH19:
+    case IMAGE_REL_ARM64_BRANCH14:
+      return 0;
+
+    default:
+      break;
+    }
+#endif
+
   switch (rel->howto->bitsize)
     {
-#if defined (COFF_WITH_peAArch64)
-    case 12:
-      ok = bfd_get_section_contents (s->owner, s, &addend, rel->address, 4);
-      if (!ok)
-        break;
-      addend = (addend >> 10) & ((1 << 12) - 1);
-      break;
-    case 21:
-      ok = bfd_get_section_contents (s->owner, s, &addend, rel->address, 4);
-      if (!ok)
-        break;
-      addend = (((addend >> 5) & ((1 << 19) - 1)) << 2) | ((addend >> 29) & ((1 << 2) - 1));
-      addend <<= 12;
-      break;
-    case 26:
-      ok = bfd_get_section_contents (s->owner, s, &addend, rel->address, 4);
-      if (!ok)
-        break;
-      addend = addend & ((1 << 12) - 1);
-      addend <<= 2;
-      break;
-#endif
     case 8:
       ok = bfd_get_section_contents (s->owner, s, buf, rel->address, 1);
       if (ok)
