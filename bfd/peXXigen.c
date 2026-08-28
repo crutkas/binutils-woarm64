@@ -1836,6 +1836,9 @@ pe_print_edata (bfd * abfd, void * vfile)
    _IMAGE_ALPHA_RUNTIME_FUNCTION_ENTRY.
    See http://msdn2.microsoft.com/en-us/library/ms253988(VS.80).aspx .
 
+   On AArch64, each entry contains two dwords: BeginAddress and
+   UnwindData.
+
    This is the version for uncompressed data.  */
 
 static bool
@@ -1846,13 +1849,15 @@ pe_print_pdata (bfd * abfd, void * vfile)
 #else
 # define PDATA_ROW_SIZE	(5 * 4)
 #endif
+#define AARCH64_PDATA_ROW_SIZE	(2 * 4)
   FILE *file = (FILE *) vfile;
   bfd_byte *data = 0;
   asection *section = bfd_get_section_by_name (abfd, ".pdata");
   bfd_size_type datasize = 0;
   bfd_size_type i;
   bfd_size_type start, stop;
-  int onaline = PDATA_ROW_SIZE;
+  bool is_aarch64 = bfd_get_arch (abfd) == bfd_arch_aarch64;
+  int onaline = is_aarch64 ? AARCH64_PDATA_ROW_SIZE : PDATA_ROW_SIZE;
 
   if (section == NULL
       || (section->flags & SEC_HAS_CONTENTS) == 0
@@ -1873,7 +1878,10 @@ pe_print_pdata (bfd * abfd, void * vfile)
   fprintf (file,
 	   _(" vma:\t\t\tBegin Address    End Address      Unwind Info\n"));
 #else
-  fprintf (file, _("\
+  if (is_aarch64)
+    fprintf (file, _(" vma:\t\tBeginAddress  UnwindData\n"));
+  else
+    fprintf (file, _("\
  vma:\t\tBegin    End      EH       EH       PrologEnd  Exception\n\
      \t\tAddress  Address  Handler  Data     Address    Mask\n"));
 #endif
@@ -1903,6 +1911,7 @@ pe_print_pdata (bfd * abfd, void * vfile)
     {
       bfd_vma begin_addr;
       bfd_vma end_addr;
+      bfd_vma unwind_data;
       bfd_vma eh_handler;
       bfd_vma eh_data;
       bfd_vma prolog_end_addr;
@@ -1910,10 +1919,27 @@ pe_print_pdata (bfd * abfd, void * vfile)
       int em_data;
 #endif
 
-      if (i + PDATA_ROW_SIZE > stop)
+      if (i + onaline > stop)
 	break;
 
       begin_addr      = GET_PDATA_ENTRY (abfd, data + i	    );
+
+      if (is_aarch64)
+	{
+	  unwind_data = GET_PDATA_ENTRY (abfd, data + i + 4);
+	  if (begin_addr == 0 && unwind_data == 0)
+	    break;
+
+	  fputc (' ', file);
+	  bfd_fprintf_vma (abfd, file, i + section->vma);
+	  fputc ('\t', file);
+	  bfd_fprintf_vma (abfd, file, begin_addr);
+	  fputc (' ', file);
+	  bfd_fprintf_vma (abfd, file, unwind_data);
+	  fputc ('\n', file);
+	  continue;
+	}
+
       end_addr	      = GET_PDATA_ENTRY (abfd, data + i +  4);
       eh_handler      = GET_PDATA_ENTRY (abfd, data + i +  8);
       eh_data	      = GET_PDATA_ENTRY (abfd, data + i + 12);
@@ -1948,6 +1974,7 @@ pe_print_pdata (bfd * abfd, void * vfile)
 
   return true;
 #undef PDATA_ROW_SIZE
+#undef AARCH64_PDATA_ROW_SIZE
 }
 
 typedef struct sym_cache
