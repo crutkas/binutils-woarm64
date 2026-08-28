@@ -489,6 +489,87 @@ in_reloc_p (bfd * abfd ATTRIBUTE_UNUSED,
 #endif
 
 static bool
+coff_aarch64_hash_defined (const struct coff_link_hash_entry *h)
+{
+  return h != NULL
+    && (h->root.type == bfd_link_hash_defined
+	|| h->root.type == bfd_link_hash_defweak);
+}
+
+static char *
+coff_aarch64_import_site_name (const char *kind, const char *symbol_name,
+			       bfd *input_bfd, asection *input_section,
+			       bfd_vma address)
+{
+  char address_string[2 * sizeof (bfd_vma) + 1];
+
+  bfd_sprintf_vma (input_bfd, address_string, address);
+  return xasprintf ("__pei_aarch64_auto_import_%s_%s_%x_%s",
+		    kind, symbol_name, input_section->id, address_string);
+}
+
+static bool
+coff_aarch64_resolve_undefweak (bfd *input_bfd,
+				struct coff_link_hash_entry **entry,
+				asection **section, bfd_vma *value)
+{
+  struct coff_link_hash_entry *h = *entry;
+
+  *section = bfd_abs_section_ptr;
+  *value = 0;
+
+  if (h->symbol_class != C_NT_WEAK || h->numaux != 1)
+    return true;
+
+  if (h->auxbfd == NULL
+      || h->aux == NULL
+      || coff_data (h->auxbfd) == NULL
+      || obj_coff_sym_hashes (h->auxbfd) == NULL
+      || h->aux->x_sym.x_tagndx.u32 >= obj_raw_syment_count (h->auxbfd))
+    {
+      _bfd_error_handler
+	/* xgettext:c-format */
+	(_("%pB: malformed weak external `%s'"),
+	 input_bfd, h->root.root.string);
+      bfd_set_error (bfd_error_bad_value);
+      return false;
+    }
+
+  struct coff_link_hash_entry *fallback
+    = obj_coff_sym_hashes (h->auxbfd)[h->aux->x_sym.x_tagndx.u32];
+
+  if (fallback == NULL
+      || fallback->root.type == bfd_link_hash_undefined
+      || fallback->root.type == bfd_link_hash_undefweak)
+    return true;
+
+  if (!coff_aarch64_hash_defined (fallback))
+    {
+      _bfd_error_handler
+	/* xgettext:c-format */
+	(_("%pB: unsupported weak fallback for `%s'"),
+	 input_bfd, h->root.root.string);
+      bfd_set_error (bfd_error_bad_value);
+      return false;
+    }
+
+  if (fallback->root.u.def.section == NULL)
+    {
+      _bfd_error_handler
+	/* xgettext:c-format */
+	(_("%pB: weak fallback for `%s' has no section"),
+	 input_bfd, h->root.root.string);
+      bfd_set_error (bfd_error_bad_value);
+      return false;
+    }
+
+  *entry = fallback;
+  *section = fallback->root.u.def.section;
+  *value = fallback->root.u.def.value;
+  return true;
+}
+
+static bool
 coff_pe_aarch64_relocate_section (bfd *output_bfd,
 				  struct bfd_link_info *info,
 				  bfd *input_bfd,
@@ -527,34 +608,16 @@ coff_pe_aarch64_relocate_section (bfd *output_bfd,
 	continue;
 
       symndx = rel->r_symndx;
-      sym_value = syms[symndx].n_value;
-
-      h = obj_coff_sym_hashes (input_bfd)[symndx];
-
-      if (h && h->root.type == bfd_link_hash_defined)
-	{
-	  sec = h->root.u.def.section;
-	  sym_value = h->root.u.def.value;
-	}
-      else
-	{
-	  sec = sections[symndx];
-	}
-
-      if (!sec)
-	continue;
-
-      if (bfd_is_und_section (sec))
-	continue;
-
-      if (discarded_section (sec))
-	continue;
-
-      dest_vma = sec->output_section->vma + sec->output_offset + sym_value;
-
       if (symndx < 0
 	  || (unsigned long) symndx >= obj_raw_syment_count (input_bfd))
-	continue;
+	{
+	  _bfd_error_handler
+	    /* xgettext:c-format */
+	    (_("%pB: illegal symbol index %ld in relocs"),
+	     input_bfd, symndx);
+	  bfd_set_error (bfd_error_bad_value);
+	  return false;
+	}
 
       /* All the relocs handled below operate on 4 bytes.  */
       if (input_section->size < rel->r_vaddr
@@ -564,7 +627,127 @@ coff_pe_aarch64_relocate_section (bfd *output_bfd,
 	    /* xgettext: c-format */
 	    (_("%pB: bad reloc address %#" PRIx64 " in section `%pA'"),
 	     input_bfd, (uint64_t) rel->r_vaddr, input_section);
+	  bfd_set_error (bfd_error_bad_value);
+	  return false;
+	}
+
+      sym_value = syms[symndx].n_value;
+      h = (obj_coff_sym_hashes (input_bfd) == NULL
+	   ? NULL : obj_coff_sym_hashes (input_bfd)[symndx]);
+
+      if (h != NULL && h->root.type == bfd_link_hash_defweak
+	  && (rel->r_type == IMAGE_REL_ARM64_PAGEBASE_REL21
+	      || rel->r_type == IMAGE_REL_ARM64_PAGEOFFSET_12A
+	      || rel->r_type == IMAGE_REL_ARM64_PAGEOFFSET_12L))
+	{
+	  const char *kind
+	    = (rel->r_type == IMAGE_REL_ARM64_PAGEBASE_REL21
+	       ? "base" : "low");
+	  char *marker_name
+	    = coff_aarch64_import_site_name (kind, h->root.root.string,
+					     input_bfd, input_section,
+					     rel->r_vaddr);
+	  struct coff_link_hash_entry *marker
+	    = coff_link_hash_lookup (coff_hash_table (info), marker_name,
+				     false, false, true);
+	  free (marker_name);
+
+	  if (marker != NULL)
+	    {
+	      if (!coff_aarch64_hash_defined (marker)
+		  || marker->root.u.def.section != input_section
+		  || marker->root.u.def.value != rel->r_vaddr)
+		{
+		  _bfd_error_handler
+		    /* xgettext:c-format */
+		    (_("%pB: invalid AArch64 auto-import marker for `%s'"),
+		     input_bfd, h->root.root.string);
+		  bfd_set_error (bfd_error_bad_value);
+		  return false;
+		}
+
+	      if (rel->r_type != IMAGE_REL_ARM64_PAGEBASE_REL21)
+		{
+		  rel->r_vaddr = -1;
+		  continue;
+		}
+
+	      char *stub_name
+		= coff_aarch64_import_site_name ("stub",
+						 h->root.root.string,
+						 input_bfd, input_section,
+						 rel->r_vaddr);
+	      struct coff_link_hash_entry *stub
+		= coff_link_hash_lookup (coff_hash_table (info), stub_name,
+					 false, false, true);
+	      free (stub_name);
+
+	      if (stub == NULL
+		  || stub->root.type != bfd_link_hash_defined
+		  || stub->root.u.def.section == NULL)
+		{
+		  _bfd_error_handler
+		    /* xgettext:c-format */
+		    (_("%pB: missing AArch64 auto-import stub for `%s'"),
+		     input_bfd, h->root.root.string);
+		  bfd_set_error (bfd_error_bad_value);
+		  return false;
+		}
+
+	      h = stub;
+	      rel->r_type = IMAGE_REL_ARM64_BRANCH26;
+	      bfd_putl32 (0x14000000, contents + rel->r_vaddr);
+	    }
+	}
+
+      if (coff_aarch64_hash_defined (h))
+	{
+	  sec = h->root.u.def.section;
+	  sym_value = h->root.u.def.value;
+	}
+      else if (h != NULL && h->root.type == bfd_link_hash_undefweak)
+	{
+	  if (!coff_aarch64_resolve_undefweak
+		(input_bfd, &h, &sec, &sym_value))
+	    return false;
+	}
+      else
+	sec = sections[symndx];
+
+      if (sec == NULL)
+	{
+	  if (coff_aarch64_hash_defined (h))
+	    {
+	      _bfd_error_handler
+		/* xgettext:c-format */
+		(_("%pB: definition of `%s' has no section"),
+		 input_bfd, h->root.root.string);
+	      bfd_set_error (bfd_error_bad_value);
+	      return false;
+	    }
 	  continue;
+	}
+
+      if (bfd_is_und_section (sec))
+	continue;
+
+      if (discarded_section (sec))
+	continue;
+
+      dest_vma = sym_value;
+      if (!bfd_is_abs_section (sec))
+	{
+	  if (sec->output_section == NULL)
+	    {
+	      _bfd_error_handler
+		/* xgettext:c-format */
+		(_("%pB: no output section for relocation against `%s'"),
+		 input_bfd, h == NULL ? "<local>" : h->root.root.string);
+	      bfd_set_error (bfd_error_bad_value);
+	      return false;
+	    }
+	  dest_vma += (sec->output_section->vma
+		       + sec->output_offset);
 	}
 
       switch (rel->r_type)
@@ -1094,4 +1277,3 @@ const bfd_target
   &bigobj_swap_table
 };
 #endif
-

@@ -108,8 +108,14 @@ if {[istarget i*86-*-cygwin*]
     run_ld_link_tests $pe_tests
 }
 
-if {[istarget "aarch64-*-pe*"] || [istarget "aarch64-*-mingw*"]} {
-    run_dump_test "pe-aarch64"
+if {[istarget "aarch64-*-pe*"]
+    || [istarget "aarch64-*-mingw*"]
+    || [istarget "aarch64-*-cygwin*"]} {
+    if {![istarget "aarch64-*-cygwin*"]} {
+	run_dump_test "pe-aarch64"
+    }
+    run_dump_test "aarch64-pdata"
+    run_dump_test "aarch64-weak-relocs"
 
     set pe_tests {
       {"aarch64" "--image-base 0x1000" "" "" {aarch64a.s aarch64b.s}
@@ -118,9 +124,77 @@ if {[istarget "aarch64-*-pe*"] || [istarget "aarch64-*-mingw*"]} {
 	{{objdump -s secrel_64.d}} "secrel.x"}
       {".secidx" "--disable-reloc-section" "" "" {secidx1.s secidx2.s}
 	{{objdump -s secidx_aarch64.d}} "secidx.x"}
+      {"AArch64 weak references"
+	"--entry entry --image-base=0x1000 --section-start=.data=0x5000"
+	"" "" {aarch64-weak.s}
+	{{objdump -d aarch64-weak.d}} "aarch64-weak.exe"}
+      {"AArch64 ADDR32 overflow" "--entry entry" "" ""
+	{aarch64-addr32-overflow.s}
+	{{ld aarch64-addr32-overflow.l}} "aarch64-addr32-overflow.exe"}
+      {"AArch64 auto-import DLL"
+	"-shared --entry dyn_f --export-all-symbols --out-implib tmpdir/libaarch64-auto-import.a"
+	"" "" {aarch64-auto-import-dll.s} {} "aarch64-auto-import.dll"}
+      {"AArch64 auto-import stubs"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import.s}
+	{{objdump -d aarch64-auto-import.d}} "aarch64-auto-import.exe"}
+      {"AArch64 auto-import stubs without pseudo-relocations"
+	"--entry entry --enable-auto-import --disable-runtime-pseudo-reloc"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-function.s}
+	{{objdump -d aarch64-auto-import-function.d}}
+	"aarch64-auto-import-function.exe"}
+      {"AArch64 data auto-import without pseudo-relocations"
+	"--entry entry --enable-auto-import --disable-runtime-pseudo-reloc"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-data.s}
+	{{objdump -d aarch64-auto-import-data.d}}
+	"aarch64-auto-import-data.exe"}
+      {"AArch64 auto-import symbols are not auto-exported"
+	"-shared --entry entry --export-all-symbols --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import.s}
+	{{objdump -p aarch64-auto-import-exports.d}}
+	"aarch64-auto-import-client.dll"}
+      {"AArch64 auto-import rejects REL21"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-rel21.s}
+	{{ld aarch64-auto-import-unsupported.l}} "aarch64-auto-import-rel21.exe"}
+      {"AArch64 auto-import rejects orphan low relocation"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-orphan.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-orphan.exe"}
+      {"AArch64 auto-import rejects mismatched addends"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-mismatch.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-mismatch.exe"}
+      {"AArch64 auto-import rejects an aliasing store"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-alias-store.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-alias-store.exe"}
+      {"AArch64 auto-import stub range"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2 --section-start=.fartext=0x150000000"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-far.s}
+	{{ld aarch64-auto-import-range.l}} "aarch64-auto-import-far.exe"}
     }
 
     run_ld_link_tests $pe_tests
+
+    set short_import_object "tmpdir/aarch64-short-import.obj"
+    set short_import_archive "tmpdir/libaarch64-short-import.a"
+    set short_import_file [open $short_import_object "wb"]
+    fconfigure $short_import_file -translation binary -encoding binary
+    puts -nonewline $short_import_file [binary format H* \
+      "0000ffff000064aa000000001700000000000400"]
+    puts -nonewline $short_import_file "short_import\x00short.dll\x00"
+    close $short_import_file
+
+    if {[ar_simple_create $ar "" $short_import_archive $short_import_object]} {
+	run_ld_link_tests [list [list \
+	  "AArch64 short import thunk" "--entry entry" $short_import_archive "" \
+	  {aarch64-short-import.s} {{objdump -d aarch64-short-import.d}} \
+	  "aarch64-short-import.exe"]]
+    } else {
+	unsupported "AArch64 short import thunk"
+    }
 }
 
 run_dump_test "image_size"
