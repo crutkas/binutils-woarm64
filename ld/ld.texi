@@ -3724,6 +3724,8 @@ The image base address may be relocated using address space layout
 randomization (ASLR).  This feature was introduced with MS Windows
 Vista for i386 PE targets.  This option is enabled by default but
 can be disabled via the @option{--disable-dynamicbase} option.
+ASLR cannot be disabled for AArch64 PE targets, where
+@option{--disable-dynamicbase} is rejected.
 This option also implies @option{--enable-reloc-section}.
 
 @kindex --forceinteg

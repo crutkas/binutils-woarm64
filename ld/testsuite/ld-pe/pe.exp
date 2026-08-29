@@ -133,6 +133,10 @@ if {[istarget "aarch64-*-pe*"]
       {"AArch64 ADDR32 overflow" "--entry entry" "" ""
 	{aarch64-addr32-overflow.s}
 	{{ld aarch64-addr32-overflow.l}} "aarch64-addr32-overflow.exe"}
+      {"AArch64 rejects --disable-dynamicbase" "--disable-dynamicbase" "" ""
+	{aarch64a.s}
+	{{ld aarch64-disable-dynamicbase.l}}
+	"aarch64-disable-dynamicbase.exe"}
       {"AArch64 auto-import DLL"
 	"-shared --entry dyn_f --export-all-symbols --out-implib tmpdir/libaarch64-auto-import.a"
 	"" "" {aarch64-auto-import-dll.s} {} "aarch64-auto-import.dll"}
