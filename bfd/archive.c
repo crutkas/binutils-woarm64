@@ -2293,8 +2293,9 @@ _bfd_write_archive_contents (bfd *arch)
 	 this code against an older ar, needs the D flag.  Two timestamps
 	 vary independently without it.  The symbol map member's date is the
 	 moment of generation, so an archive carrying a symbol map differs
-	 between runs even when every input is unchanged; for COFF that date
-	 is a plain time (NULL) in _bfd_coff_write_armap, which is what
+	 between runs even when every input is unchanged, unless both runs
+	 land in the same wall-clock second; for COFF that date is a plain
+	 time (NULL) in _bfd_coff_write_armap, which is what
 	 BFD_JUMP_TABLE_ARCHIVE (_bfd_archive_coff) selects here, not the
 	 archive mtime plus ARMAP_TIME_OFFSET that _bfd_bsd_write_armap
 	 uses.  Each real member's date is that file's own mtime and is
