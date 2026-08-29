@@ -450,6 +450,267 @@ proc deterministic_archive { } {
     pass $testname
 }
 
+# Return an archive's bytes without text-mode translation.
+
+proc ar_read_binary { filename } {
+    set file [open $filename r]
+    fconfigure $file -translation binary -encoding binary
+    set contents [read $file]
+    close $file
+    return $contents
+}
+
+# Return the name, date, and four-byte symbol count of the first member.
+
+proc ar_first_member_fields { contents } {
+    set name [string trimright [string range $contents 8 23]]
+    set date [string trim [string range $contents 24 35]]
+    binary scan [string range $contents 68 71] H8 count
+    return [list $name $date $count]
+}
+
+# Wait until the wall clock advances, bounding the wait with an elapsed-time
+# clock so the test cannot pass merely because two commands ran in one second.
+
+proc ar_wait_for_next_second { } {
+    set second [clock seconds]
+    set start [clock clicks -milliseconds]
+    set elapsed 0
+
+    while { [clock seconds] <= $second && $elapsed <= 5000 } {
+	after 20
+	set elapsed [expr {[clock clicks -milliseconds] - $start}]
+    }
+
+    if { [clock seconds] <= $second || $elapsed < 1 || $elapsed > 5000 } {
+	return -1
+    }
+    return $elapsed
+}
+
+# A PE/COFF object with no indexable symbols still gets a zero-entry armap.
+
+proc zero_symbol_coff_armap { } {
+    global AR
+    global srcdir
+    global subdir
+    global obj
+
+    set testname "ar zero-symbol AArch64 PE armap"
+
+    if { [is_remote host]
+	 || ![istarget "aarch64-*-*"]
+	 || ![is_pecoff_format] } {
+	unsupported $testname
+	return
+    }
+
+    set object tmpdir/z.${obj}
+    if ![binutils_assemble $srcdir/$subdir/ar-zero-symbol.s $object] {
+	unsupported $testname
+	return
+    }
+
+    set failure ""
+    set object_bytes [ar_read_binary $object]
+    binary scan [string range $object_bytes 0 1] H4 machine
+    if { [string length $object_bytes] < 20 || $machine != "64aa" } {
+	set failure "input is not an AArch64 PE/COFF object"
+    }
+
+    set u_first_archive tmpdir/ar-zero-u-first.a
+    set u_second_archive tmpdir/ar-zero-u-second.a
+    set d_first_archive tmpdir/ar-zero-d-first.a
+    set d_second_archive tmpdir/ar-zero-d-second.a
+    set default_first_archive tmpdir/ar-zero-default-first.a
+    set default_second_archive tmpdir/ar-zero-default-second.a
+    set s_archive tmpdir/ar-zero-s.a
+    set archives [list \
+		      $u_first_archive $u_second_archive \
+		      $d_first_archive $d_second_archive \
+		      $default_first_archive $default_second_archive \
+		      $s_archive]
+    foreach archive $archives {
+	remote_file build delete $archive
+    }
+
+    set had_sde [info exists ::env(SOURCE_DATE_EPOCH)]
+    if { $had_sde } {
+	set saved_sde $::env(SOURCE_DATE_EPOCH)
+    }
+    unsetenv SOURCE_DATE_EPOCH
+
+    if { $failure == "" } {
+	set got [binutils_run $AR "rcU $u_first_archive $object"]
+	if { $got != "" } {
+	    set failure "could not create first U archive: $got"
+	}
+    }
+
+    if { $failure == "" } {
+	set elapsed [ar_wait_for_next_second]
+	if { $elapsed < 0 } {
+	    set failure "wall-clock tick was not crossed within 1..5000 ms"
+	}
+    }
+
+    if { $failure == "" } {
+	set got [binutils_run $AR "rcU $u_second_archive $object"]
+	if { $got != "" } {
+	    set failure "could not create second U archive: $got"
+	}
+    }
+
+    if { $failure == "" } {
+	set u_first [ar_read_binary $u_first_archive]
+	set u_second [ar_read_binary $u_second_archive]
+	set u_first_fields [ar_first_member_fields $u_first]
+	set u_second_fields [ar_first_member_fields $u_second]
+	set u_first_date [lindex $u_first_fields 1]
+	set u_second_date [lindex $u_second_fields 1]
+
+	if { [string range $u_first 0 7] != "!<arch>\n"
+	     || [lindex $u_first_fields 0] != "/"
+	     || [lindex $u_second_fields 0] != "/"
+	     || [lindex $u_first_fields 2] != "00000000"
+	     || [lindex $u_second_fields 2] != "00000000" } {
+	    set failure "U archive lacks a / armap with big-endian count zero"
+	} elseif { ![string is integer -strict $u_first_date]
+		   || ![string is integer -strict $u_second_date]
+		   || $u_second_date <= $u_first_date
+		   || $u_first == $u_second } {
+	    set failure "U armap dates or archive bytes did not differ"
+	} elseif { [string replace $u_first 24 35 ""] !=
+		   [string replace $u_second 24 35 ""] } {
+	    set failure "U archives differ outside the armap date field"
+	}
+    }
+
+    if { $failure == "" } {
+	set got [binutils_run $AR "rcD $d_first_archive $object"]
+	if { $got != "" } {
+	    set failure "could not create D archive: $got"
+	}
+    }
+
+    if { $failure == "" } {
+	set elapsed [ar_wait_for_next_second]
+	if { $elapsed < 0 } {
+	    set failure "D wall-clock tick was not crossed within 1..5000 ms"
+	}
+    }
+
+    if { $failure == "" } {
+	set got [binutils_run $AR "rcD $d_second_archive $object"]
+	if { $got != "" } {
+	    set failure "could not create second D archive: $got"
+	}
+    }
+
+    if { $failure == "" } {
+	set d_first [ar_read_binary $d_first_archive]
+	set d_second [ar_read_binary $d_second_archive]
+	set d_first_fields [ar_first_member_fields $d_first]
+	set d_second_fields [ar_first_member_fields $d_second]
+
+	if { [lindex $d_first_fields 0] != "/"
+	     || [lindex $d_second_fields 0] != "/"
+	     || [lindex $d_first_fields 1] != "0"
+	     || [lindex $d_second_fields 1] != "0"
+	     || [lindex $d_first_fields 2] != "00000000"
+	     || [lindex $d_second_fields 2] != "00000000"
+	     || $d_first != $d_second } {
+	    set failure "D archives are not identical zero-date armaps"
+	}
+    }
+
+    if { $failure == "" } {
+	set got [binutils_run $AR "rc $default_first_archive $object"]
+	if { $got != "" } {
+	    set failure "could not create first default-mode archive: $got"
+	}
+    }
+
+    if { $failure == "" } {
+	set elapsed [ar_wait_for_next_second]
+	if { $elapsed < 0 } {
+	    set failure "default-mode wall-clock tick was not crossed within 1..5000 ms"
+	}
+    }
+
+    if { $failure == "" } {
+	set got [binutils_run $AR "rc $default_second_archive $object"]
+	if { $got != "" } {
+	    set failure "could not create second default-mode archive: $got"
+	}
+    }
+
+    if { $failure == "" } {
+	set default_first [ar_read_binary $default_first_archive]
+	set default_second [ar_read_binary $default_second_archive]
+	set default_first_fields [ar_first_member_fields $default_first]
+	set default_second_fields [ar_first_member_fields $default_second]
+	set default_first_date [lindex $default_first_fields 1]
+	set default_second_date [lindex $default_second_fields 1]
+
+	if { [lindex $default_first_fields 0] != "/"
+	     || [lindex $default_second_fields 0] != "/"
+	     || [lindex $default_first_fields 2] != "00000000"
+	     || [lindex $default_second_fields 2] != "00000000" } {
+	    set failure "default archives lack a / armap with count zero"
+	} elseif { $default_first_date == "0" && $default_second_date == "0" } {
+	    if { $default_first != $default_second
+		 || $default_first != $d_first } {
+		set failure "D-like default archives are not byte-identical to D"
+	    } else {
+		set default_mode "D"
+	    }
+	} elseif { [string is integer -strict $default_first_date]
+		   && [string is integer -strict $default_second_date]
+		   && $default_first_date > 0
+		   && $default_second_date > $default_first_date
+		   && $default_first != $default_second
+		   && [string replace $default_first 24 35 ""] ==
+		      [string replace $default_second 24 35 ""] } {
+	    set default_mode "U"
+	} else {
+	    set failure "default archives are neither coherently D-like nor U-like"
+	}
+    }
+
+    if { $failure == "" } {
+	set got [binutils_run $AR "rcS $s_archive $object"]
+	if { $got != "" } {
+	    set failure "could not create S archive: $got"
+	}
+    }
+
+    if { $failure == "" } {
+	set s_bytes [ar_read_binary $s_archive]
+	set s_name [string trimright [string range $s_bytes 8 23]]
+	if { [string range $s_bytes 0 7] != "!<arch>\n"
+	     || $s_name == "/"
+	     || $s_name != "[file tail $object]/" } {
+	    set failure "S archive contains an armap or lacks the object member"
+	}
+    }
+
+    if { $had_sde } {
+	setenv SOURCE_DATE_EPOCH $saved_sde
+    } else {
+	unsetenv SOURCE_DATE_EPOCH
+    }
+
+    if { $failure != "" } {
+	verbose -log "$testname: $failure"
+	fail $testname
+	return
+    }
+
+    verbose -log "$testname: U dates $u_first_date -> $u_second_date; default is $default_mode-like; bounded waits passed"
+    pass $testname
+}
+
 # Test replacing a member of a deterministic archive.
 
 proc replacing_deterministic_member { } {
@@ -1048,6 +1309,7 @@ if { [file exists $base_dir/bfdtest1] && [file exists $base_dir/bfdtest2] } {
 symbol_table
 argument_parsing
 deterministic_archive
+zero_symbol_coff_armap
 replacing_deterministic_member
 replacing_non_deterministic_member
 replacing_sde_deterministic_member

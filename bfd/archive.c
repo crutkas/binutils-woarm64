@@ -2301,9 +2301,12 @@ _bfd_write_archive_contents (bfd *arch)
 	 uses.  Each real member's date is that file's own mtime and is
 	 stable across runs.  D zeroes the map date; the COFF writer already
 	 hardcodes the map uid and gid to zero either way.  An archive with
-	 no symbol map, from rcS or from members that define no symbols, is
-	 reproducible without D.  These are additive, not alternatives -- an
-	 archive can differ by both at once.  */
+	 no symbol map, from rcS, is reproducible without D when its members
+	 are unchanged.  A COFF member that defines no symbols does not imply
+	 that there is no map: unless S suppresses it, the writer emits a "/"
+	 member with a zero symbol count, and its date still varies as above.
+	 These are additive, not alternatives -- an archive can differ by both
+	 at once.  */
       if ((current->flags & BFD_IN_MEMORY) != 0
 	  && current->my_archive == NULL
 	  && bfd_get_filename (current) != NULL)
