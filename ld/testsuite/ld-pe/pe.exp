@@ -230,6 +230,12 @@ if {[istarget "aarch64-*-pe*"]
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-source-use.s}
 	{{ld aarch64-auto-import-pair.l}}
 	"aarch64-auto-import-source-use.exe"}
+      {"AArch64 auto-import rejects register-offset source use"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-register-offset.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-register-offset.exe"}
       {"AArch64 auto-import rejects mismatched addends"
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-mismatch.s}
