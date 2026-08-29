@@ -1393,8 +1393,8 @@ aarch64_same_reloc_symbol (arelent *first, arelent *second)
 }
 
 static bool
-aarch64_validate_page_pair (asection *section, arelent *page_rel,
-			    arelent *low_rel)
+aarch64_page_pair_encodings_match (asection *section, arelent *page_rel,
+				   arelent *low_rel)
 {
   uint32_t page_insn;
   uint32_t low_insn;
@@ -1441,44 +1441,231 @@ aarch64_validate_page_pair (asection *section, arelent *page_rel,
 	  == low_addend);
 }
 
+struct aarch64_low_reloc_index
+{
+  bfd_vma address;
+  int reloc_index;
+};
+
+struct aarch64_auto_import_reloc_cache
+{
+  arelent **low_pages;
+  int *low_page_indices;
+  bool *page_has_low;
+  struct aarch64_low_reloc_index *low_relocs;
+  int low_count;
+};
+
+static int
+aarch64_low_reloc_index_compare (const void *first, const void *second)
+{
+  const struct aarch64_low_reloc_index *a = first;
+  const struct aarch64_low_reloc_index *b = second;
+
+  if (a->address < b->address)
+    return -1;
+  if (a->address > b->address)
+    return 1;
+  return 0;
+}
+
+static bool
+aarch64_page_has_low_reloc_at
+  (const struct aarch64_auto_import_reloc_cache *cache,
+   arelent *page_rel, bfd_vma address)
+{
+  int first = 0;
+  int last = cache->low_count;
+
+  while (first < last)
+    {
+      int middle = first + (last - first) / 2;
+
+      if (cache->low_relocs[middle].address < address)
+	first = middle + 1;
+      else
+	last = middle;
+    }
+
+  while (first < cache->low_count
+	 && cache->low_relocs[first].address == address)
+    {
+      if (cache->low_pages[cache->low_relocs[first].reloc_index] == page_rel)
+	return true;
+      first++;
+    }
+  return false;
+}
+
+static bool
+aarch64_page_pair_path_preserves_reg
+  (asection *section, arelent *page_rel, arelent *low_rel,
+   const struct aarch64_auto_import_reloc_cache *cache)
+{
+  uint32_t page_insn;
+  bfd_vma address;
+  unsigned int page_reg;
+
+  if (!aarch64_get_section_insn (section, page_rel->address, &page_insn))
+    return false;
+
+  page_reg = page_insn & 0x1f;
+  for (address = page_rel->address + 4;
+       address < low_rel->address;
+       address += 4)
+    {
+      uint32_t between;
+      unsigned int op0;
+
+      if (!aarch64_get_section_insn (section, address, &between))
+	return false;
+
+      /* Do not infer data flow across a branch, call, return, or exception.  */
+      if ((between & 0x7c000000) == 0x14000000
+	  || (between & 0xff000000) == 0x54000000
+	  || (between & 0x7e000000) == 0x34000000
+	  || (between & 0x7e000000) == 0x36000000
+	  || (between & 0xfe000000) == 0xd6000000
+	  || (between & 0xff000000) == 0xd4000000)
+	return false;
+
+      /* Treat any matching register field conservatively as a clobber.
+	 Decode load/store destinations separately because an ordinary memory
+	 access reads, rather than overwrites, its base register.  */
+      op0 = (between >> 25) & 0xf;
+      if (op0 == 4 || op0 == 6 || op0 == 12 || op0 == 14)
+	{
+	  bool is_pair = (between & 0x3a000000) == 0x28000000;
+	  bool is_literal = (between & 0x3b000000) == 0x18000000;
+	  bool is_exclusive = (between & 0x3f000000) == 0x08000000;
+	  bool is_simd_struct_post
+	    = (between & 0x3e800000) == 0x0c800000;
+	  unsigned int address_mode = (between >> 10) & 3;
+	  bool writes_back
+	    = (is_simd_struct_post
+	       || (!is_literal
+	       && (is_pair
+		   ? (((between >> 23) & 3) == 1
+		      || ((between >> 23) & 3) == 3)
+		   : ((between & (1 << 24)) == 0
+		      && (address_mode == 1 || address_mode == 3)))));
+
+	  if ((between & 0x1f) == page_reg
+	      || (is_pair && ((between >> 10) & 0x1f) == page_reg)
+	      || (is_exclusive && ((between >> 16) & 0x1f) == page_reg)
+	      || (writes_back && ((between >> 5) & 0x1f) == page_reg)
+	      || (!is_literal
+		  && ((between >> 5) & 0x1f) == page_reg
+		  && !aarch64_page_has_low_reloc_at (cache, page_rel,
+						     address)))
+	    return false;
+	}
+      else
+	{
+	  bool is_pc_relative
+	    = (between & 0x1f000000) == 0x10000000;
+	  bool is_move_wide
+	    = (between & 0x1f800000) == 0x12800000;
+	  bool uses_page_reg
+	    = (!is_pc_relative
+	       && !is_move_wide
+	       && ((between >> 5) & 0x1f) == page_reg);
+
+	  if (op0 == 5 || op0 == 13)
+	    uses_page_reg
+	      = (uses_page_reg
+		 || ((between >> 10) & 0x1f) == page_reg
+		 || ((between >> 16) & 0x1f) == page_reg);
+
+	  if ((between & 0x1f) == page_reg
+	      || (uses_page_reg
+		  && !aarch64_page_has_low_reloc_at (cache, page_rel,
+						     address)))
+	    return false;
+	}
+    }
+
+  return true;
+}
+
 static arelent *
 aarch64_find_page_reloc (asection *section, arelent **relocs, int count,
-			 arelent *low_rel)
+			 arelent *low_rel, int *result_index)
 {
   arelent *result = NULL;
   int i;
 
+  *result_index = -1;
   for (i = 0; i < count; i++)
     if (relocs[i]->address < low_rel->address
 	&& relocs[i]->howto->type == IMAGE_REL_ARM64_PAGEBASE_REL21
-	&& aarch64_validate_page_pair (section, relocs[i], low_rel)
+	&& aarch64_page_pair_encodings_match (section, relocs[i], low_rel)
 	&& (result == NULL || relocs[i]->address > result->address))
-      result = relocs[i];
+      {
+	result = relocs[i];
+	*result_index = i;
+      }
 
   return result;
 }
 
-static bool
-aarch64_page_has_low_reloc (asection *section, arelent **relocs, int count,
-			    arelent *page_rel)
+static void
+aarch64_build_auto_import_reloc_cache
+  (asection *section, arelent **relocs, int count,
+   struct aarch64_auto_import_reloc_cache *cache)
 {
   int i;
 
-  for (i = 0; i < count; i++)
-    if (relocs[i]->address > page_rel->address
-	&& (relocs[i]->howto->type == IMAGE_REL_ARM64_PAGEOFFSET_12A
-	    || relocs[i]->howto->type == IMAGE_REL_ARM64_PAGEOFFSET_12L)
-	&& aarch64_validate_page_pair (section, page_rel, relocs[i])
-	&& aarch64_find_page_reloc (section, relocs, count, relocs[i])
-	   == page_rel)
-      return true;
+  if (count <= 0)
+    {
+      cache->low_pages = NULL;
+      cache->low_page_indices = NULL;
+      cache->page_has_low = NULL;
+      cache->low_relocs = NULL;
+      cache->low_count = 0;
+      return;
+    }
 
-  return false;
+  cache->low_pages = xcalloc (count, sizeof (*cache->low_pages));
+  cache->low_page_indices = xmalloc (count * sizeof (*cache->low_page_indices));
+  cache->page_has_low = xcalloc (count, sizeof (*cache->page_has_low));
+  cache->low_relocs = xmalloc (count * sizeof (*cache->low_relocs));
+  cache->low_count = 0;
+  for (i = 0; i < count; i++)
+    cache->low_page_indices[i] = -1;
+
+  for (i = 0; i < count; i++)
+    if (relocs[i]->howto->type == IMAGE_REL_ARM64_PAGEOFFSET_12A
+	|| relocs[i]->howto->type == IMAGE_REL_ARM64_PAGEOFFSET_12L)
+      {
+	cache->low_pages[i]
+	  = aarch64_find_page_reloc (section, relocs, count, relocs[i],
+				     &cache->low_page_indices[i]);
+	cache->low_relocs[cache->low_count].address = relocs[i]->address;
+	cache->low_relocs[cache->low_count].reloc_index = i;
+	cache->low_count++;
+      }
+
+  qsort (cache->low_relocs, cache->low_count, sizeof (*cache->low_relocs),
+	 aarch64_low_reloc_index_compare);
+  for (i = 0; i < count; i++)
+    if (cache->low_pages[i] != NULL
+	&& !aarch64_page_pair_path_preserves_reg
+	      (section, cache->low_pages[i], relocs[i], cache))
+      {
+	cache->low_pages[i] = NULL;
+	cache->low_page_indices[i] = -1;
+      }
+
+  for (i = 0; i < count; i++)
+    if (cache->low_pages[i] != NULL)
+      cache->page_has_low[cache->low_page_indices[i]] = true;
 }
 
 static void
-aarch64_validate_auto_import_reloc (asection *section, arelent **relocs,
-				    int count, arelent *rel,
+aarch64_validate_auto_import_reloc
+  (asection *section, struct aarch64_auto_import_reloc_cache *cache,
+   int index, arelent *rel,
 				    const char *symbol_name)
 {
   uint32_t insn;
@@ -1494,7 +1681,7 @@ aarch64_validate_auto_import_reloc (asection *section, arelent **relocs,
       break;
 
     case IMAGE_REL_ARM64_PAGEBASE_REL21:
-      if (!aarch64_page_has_low_reloc (section, relocs, count, rel))
+      if (!cache->page_has_low[index])
 	einfo (_("%F%P: %pB: AArch64 auto-import relocation pair "
 		 "against `%s' is malformed or unpaired\n"),
 	       section->owner, symbol_name);
@@ -1502,7 +1689,7 @@ aarch64_validate_auto_import_reloc (asection *section, arelent **relocs,
 
     case IMAGE_REL_ARM64_PAGEOFFSET_12A:
     case IMAGE_REL_ARM64_PAGEOFFSET_12L:
-      if (aarch64_find_page_reloc (section, relocs, count, rel) == NULL)
+      if (cache->low_pages[index] == NULL)
 	einfo (_("%F%P: %pB: AArch64 auto-import relocation pair "
 		 "against `%s' is malformed or unpaired\n"),
 	       section->owner, symbol_name);
@@ -1549,6 +1736,9 @@ pe_walk_relocs (struct bfd_link_info *info,
 	  arelent **relocs;
 	  int relsize, nrelocs, i;
 	  int flags = bfd_section_flags (s);
+#if defined (COFF_WITH_peAArch64)
+	  struct aarch64_auto_import_reloc_cache aarch64_reloc_cache;
+#endif
 
 	  /* Skip discarded linkonce sections.  */
 	  if (flags & SEC_LINK_ONCE
@@ -1561,6 +1751,10 @@ pe_walk_relocs (struct bfd_link_info *info,
 	  relocs = xmalloc (relsize);
 	  nrelocs = bfd_canonicalize_reloc (b, s, relocs, symbols);
 
+#if defined (COFF_WITH_peAArch64)
+	  aarch64_build_auto_import_reloc_cache
+	    (s, relocs, nrelocs, &aarch64_reloc_cache);
+#endif
 	  for (i = 0; i < nrelocs; i++)
 	    {
 	      struct bfd_symbol *sym = *relocs[i]->sym_ptr_ptr;
@@ -1573,7 +1767,7 @@ pe_walk_relocs (struct bfd_link_info *info,
 		      strcpy (name, sym->name);
 #if defined (COFF_WITH_peAArch64)
 		      aarch64_validate_auto_import_reloc
-			(s, relocs, nrelocs, relocs[i], sym->name);
+			(s, &aarch64_reloc_cache, i, relocs[i], sym->name);
 #endif
 		      cb (relocs[i], s, name, symname);
 		    }
@@ -1584,13 +1778,19 @@ pe_walk_relocs (struct bfd_link_info *info,
 		    {
 #if defined (COFF_WITH_peAArch64)
 		      aarch64_validate_auto_import_reloc
-			(s, relocs, nrelocs, relocs[i], sym->name);
+			(s, &aarch64_reloc_cache, i, relocs[i], sym->name);
 #endif
 		      cb (relocs[i], s, name, symname);
 		    }
 		}
 	    }
 
+#if defined (COFF_WITH_peAArch64)
+	  free (aarch64_reloc_cache.low_pages);
+	  free (aarch64_reloc_cache.low_page_indices);
+	  free (aarch64_reloc_cache.page_has_low);
+	  free (aarch64_reloc_cache.low_relocs);
+#endif
 	  free (relocs);
 
 	  /* Warning: the allocated symbols are remembered in BFD and reused

@@ -25,6 +25,12 @@ entry:
 	add	x5, x4, :lo12:dyn_v
 	ldr	w6, [x4, :lo12:dyn_v]
 	ldp	x29, x30, [sp], 16
+
+	# Memory accesses do not clobber a shared page base.
+	adrp	x7, dyn_v
+	ldr	w8, [x7, :lo12:dyn_v]
+	ldr	w9, [x7, :lo12:dyn_v]
+
 	add	w0, w0, w1
 	add	w0, w0, w3
 	add	w0, w0, w6

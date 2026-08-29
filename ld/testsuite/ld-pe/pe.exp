@@ -154,6 +154,10 @@ if {[istarget "aarch64-*-pe*"]
 	{{objdump -d aarch64-auto-import-layouts.d}
 	 {nm {} aarch64-auto-import-layouts-nm.d}}
 	"aarch64-auto-import-layouts.exe"}
+      {"AArch64 auto-import large relocation section"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-stress.s}
+	{} "aarch64-auto-import-stress.exe"}
       {"AArch64 auto-import stubs without pseudo-relocations"
 	"--entry entry --enable-auto-import --disable-runtime-pseudo-reloc"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-function.s}
@@ -177,6 +181,43 @@ if {[istarget "aarch64-*-pe*"]
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-orphan.s}
 	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-orphan.exe"}
+      {"AArch64 auto-import rejects cross-branch pairing"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-cross-branch.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-cross-branch.exe"}
+      {"AArch64 auto-import rejects BC.cond pairing"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-bc-cond.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-bc-cond.exe"}
+      {"AArch64 auto-import rejects clobbered page register"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-clobber.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-clobber.exe"}
+      {"AArch64 auto-import rejects sign-load clobber"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-sign-load.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-sign-load.exe"}
+      {"AArch64 auto-import rejects exclusive-store clobber"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-exclusive.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-exclusive.exe"}
+      {"AArch64 auto-import rejects unrelocated shared-base load"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-unrelocated-load.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-unrelocated-load.exe"}
+      {"AArch64 auto-import rejects SIMD post-index clobber"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-simd-post.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-simd-post.exe"}
+      {"AArch64 auto-import rejects unrelocated source use"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-source-use.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-source-use.exe"}
       {"AArch64 auto-import rejects mismatched addends"
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-mismatch.s}
