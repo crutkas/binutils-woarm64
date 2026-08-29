@@ -144,6 +144,12 @@ if {[istarget "aarch64-*-pe*"]
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import.s}
 	{{objdump -d aarch64-auto-import.d}} "aarch64-auto-import.exe"}
+      {"AArch64 auto-import GCC C++ layouts"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-layouts.s}
+	{{objdump -d aarch64-auto-import-layouts.d}
+	 {nm {} aarch64-auto-import-layouts-nm.d}}
+	"aarch64-auto-import-layouts.exe"}
       {"AArch64 auto-import stubs without pseudo-relocations"
 	"--entry entry --enable-auto-import --disable-runtime-pseudo-reloc"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-function.s}

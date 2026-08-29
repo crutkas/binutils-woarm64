@@ -1368,18 +1368,6 @@ aarch64_get_section_insn (asection *section, bfd_vma address,
   return true;
 }
 
-static arelent *
-aarch64_adjacent_reloc (arelent **relocs, int count, bfd_vma address)
-{
-  int i;
-
-  for (i = 0; i < count; i++)
-    if (relocs[i]->address == address)
-      return relocs[i];
-
-  return NULL;
-}
-
 static bfd_signed_vma
 aarch64_page_addend (uint32_t insn)
 {
@@ -1405,33 +1393,17 @@ aarch64_same_reloc_symbol (arelent *first, arelent *second)
 }
 
 static bool
-aarch64_validate_page_pair (asection *section, arelent **relocs,
-			    int count, arelent *rel)
+aarch64_validate_page_pair (asection *section, arelent *page_rel,
+			    arelent *low_rel)
 {
-  arelent *page_rel;
-  arelent *low_rel;
   uint32_t page_insn;
   uint32_t low_insn;
   bfd_vma low_addend;
 
-  if (rel->howto->type == IMAGE_REL_ARM64_PAGEBASE_REL21)
-    {
-      page_rel = rel;
-      low_rel = aarch64_adjacent_reloc (relocs, count, rel->address + 4);
-    }
-  else
-    {
-      if (rel->address < 4)
-	return false;
-      page_rel = aarch64_adjacent_reloc (relocs, count, rel->address - 4);
-      low_rel = rel;
-    }
-
-  if (page_rel == NULL
-      || low_rel == NULL
-      || page_rel->howto->type != IMAGE_REL_ARM64_PAGEBASE_REL21
+  if (page_rel->howto->type != IMAGE_REL_ARM64_PAGEBASE_REL21
       || (low_rel->howto->type != IMAGE_REL_ARM64_PAGEOFFSET_12A
 	  && low_rel->howto->type != IMAGE_REL_ARM64_PAGEOFFSET_12L)
+      || page_rel->address >= low_rel->address
       || !aarch64_same_reloc_symbol (page_rel, low_rel)
       || !aarch64_get_section_insn (section, page_rel->address, &page_insn)
       || !aarch64_get_section_insn (section, low_rel->address, &low_insn)
@@ -1469,6 +1441,41 @@ aarch64_validate_page_pair (asection *section, arelent **relocs,
 	  == low_addend);
 }
 
+static arelent *
+aarch64_find_page_reloc (asection *section, arelent **relocs, int count,
+			 arelent *low_rel)
+{
+  arelent *result = NULL;
+  int i;
+
+  for (i = 0; i < count; i++)
+    if (relocs[i]->address < low_rel->address
+	&& relocs[i]->howto->type == IMAGE_REL_ARM64_PAGEBASE_REL21
+	&& aarch64_validate_page_pair (section, relocs[i], low_rel)
+	&& (result == NULL || relocs[i]->address > result->address))
+      result = relocs[i];
+
+  return result;
+}
+
+static bool
+aarch64_page_has_low_reloc (asection *section, arelent **relocs, int count,
+			    arelent *page_rel)
+{
+  int i;
+
+  for (i = 0; i < count; i++)
+    if (relocs[i]->address > page_rel->address
+	&& (relocs[i]->howto->type == IMAGE_REL_ARM64_PAGEOFFSET_12A
+	    || relocs[i]->howto->type == IMAGE_REL_ARM64_PAGEOFFSET_12L)
+	&& aarch64_validate_page_pair (section, page_rel, relocs[i])
+	&& aarch64_find_page_reloc (section, relocs, count, relocs[i])
+	   == page_rel)
+      return true;
+
+  return false;
+}
+
 static void
 aarch64_validate_auto_import_reloc (asection *section, arelent **relocs,
 				    int count, arelent *rel,
@@ -1487,11 +1494,17 @@ aarch64_validate_auto_import_reloc (asection *section, arelent **relocs,
       break;
 
     case IMAGE_REL_ARM64_PAGEBASE_REL21:
+      if (!aarch64_page_has_low_reloc (section, relocs, count, rel))
+	einfo (_("%F%P: %pB: AArch64 auto-import relocation pair "
+		 "against `%s' is malformed or unpaired\n"),
+	       section->owner, symbol_name);
+      break;
+
     case IMAGE_REL_ARM64_PAGEOFFSET_12A:
     case IMAGE_REL_ARM64_PAGEOFFSET_12L:
-      if (!aarch64_validate_page_pair (section, relocs, count, rel))
+      if (aarch64_find_page_reloc (section, relocs, count, rel) == NULL)
 	einfo (_("%F%P: %pB: AArch64 auto-import relocation pair "
-		 "against `%s' is malformed or non-adjacent\n"),
+		 "against `%s' is malformed or unpaired\n"),
 	       section->owner, symbol_name);
       break;
 
