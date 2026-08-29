@@ -425,7 +425,7 @@ normalize (const char *file, bfd *abfd)
 /* Remove any output file.  This is only called via xatexit.  */
 
 static char *output_filename = NULL;
-static FILE *output_file = NULL;
+static bfd *output_file = NULL;
 
 static void
 remove_output (void)
@@ -433,7 +433,7 @@ remove_output (void)
   if (output_filename != NULL)
     {
       if (output_file != NULL)
-	fclose (output_file);
+	bfd_close_all_done (output_file);
       unlink_if_ordinary (output_filename);
       free (output_filename);
       output_filename = NULL;
@@ -1119,9 +1119,9 @@ print_contents (bfd *abfd)
 }
 
 
-static FILE * open_output_file (bfd *) ATTRIBUTE_RETURNS_NONNULL;
+static bfd * open_output_file (bfd *) ATTRIBUTE_RETURNS_NONNULL;
 
-static FILE *
+static bfd *
 open_output_file (bfd * abfd)
 {
   char *alloc = xstrdup (bfd_get_filename (abfd));
@@ -1159,12 +1159,11 @@ open_output_file (bfd * abfd)
   if (verbose)
     printf ("x - %s\n", output_filename);
 
-  FILE * ostream = fopen (output_filename, FOPEN_WB);
+  /* Opening through BFD gives native Windows hosts the same extended-length
+     Unicode path handling used for archive inputs.  */
+  bfd *ostream = bfd_openw (output_filename, "binary");
   if (ostream == NULL)
-    {
-      perror (output_filename);
-      xexit (1);
-    }
+    bfd_fatal (output_filename);
 
   return ostream;
 }
@@ -1224,11 +1223,8 @@ extract_file (bfd *abfd)
 	  if (output_file == NULL)
 	    output_file = open_output_file (abfd);
 
-	  /* fwrite in mingw32 may return int instead of bfd_size_type. Cast
-	     the return value to bfd_size_type to avoid comparison between
-	     signed and unsigned values.  */
-	  if ((bfd_size_type) fwrite (cbuf, 1, nread, output_file) != nread)
-	    fatal ("%s: %s", output_filename, strerror (errno));
+	  if (bfd_write (cbuf, nread, output_file) != nread)
+	    bfd_fatal (output_filename);
 
 	  ncopied += tocopy;
 	}
@@ -1236,9 +1232,10 @@ extract_file (bfd *abfd)
       free (cbuf);
     }
 
-  fclose (output_file);
-
+  bool close_ok = bfd_close_all_done (output_file);
   output_file = NULL;
+  if (!close_ok)
+    bfd_fatal (output_filename);
 
   chmod (output_filename, buf.st_mode);
 
