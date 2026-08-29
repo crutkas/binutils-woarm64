@@ -122,9 +122,9 @@ if {[istarget "aarch64-*-pe*"]
     set pe_tests {
       {"aarch64" "--image-base 0x1000" "" "" {aarch64a.s aarch64b.s}
 	{{objdump -dr aarch64.d}} "aarch64.x"}
-      {".secrel32" "--disable-reloc-section" "" "" {secrel1.s secrel2.s}
+      {".secrel32" "" "" "" {secrel1.s secrel2.s}
 	{{objdump -s secrel_64.d}} "secrel.x"}
-      {".secidx" "--disable-reloc-section" "" "" {secidx1.s secidx2.s}
+      {".secidx" "" "" "" {secidx1.s secidx2.s}
 	{{objdump -s secidx_aarch64.d}} "secidx.x"}
       {"AArch64 weak references"
 	"--entry entry --image-base=0x1000 --section-start=.data=0x5000"
@@ -137,6 +137,10 @@ if {[istarget "aarch64-*-pe*"]
 	{aarch64a.s}
 	{{ld aarch64-disable-dynamicbase.l}}
 	"aarch64-disable-dynamicbase.exe"}
+      {"AArch64 rejects --disable-reloc-section"
+	"--disable-reloc-section" "" "" {aarch64a.s}
+	{{ld aarch64-disable-reloc-section.l}}
+	"aarch64-disable-reloc-section.exe"}
       {"AArch64 auto-import DLL"
 	"-shared --entry dyn_f --export-all-symbols --out-implib tmpdir/libaarch64-auto-import.a"
 	"" "" {aarch64-auto-import-dll.s} {} "aarch64-auto-import.dll"}
@@ -189,6 +193,12 @@ if {[istarget "aarch64-*-pe*"]
     }
 
     run_ld_link_tests $pe_tests
+    if {[remote_file host exists \
+	   "tmpdir/aarch64-disable-reloc-section.exe"]} {
+	fail "AArch64 --disable-reloc-section emits no image"
+    } else {
+	pass "AArch64 --disable-reloc-section emits no image"
+    }
 
     # A short import (ILF) object: the 20 byte ILF header followed by the
     # imported symbol name and the source DLL name.  BFD does not keep
