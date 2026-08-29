@@ -537,8 +537,8 @@ proc zero_symbol_coff_armap { } {
     set had_sde [info exists ::env(SOURCE_DATE_EPOCH)]
     if { $had_sde } {
 	set saved_sde $::env(SOURCE_DATE_EPOCH)
+	unsetenv SOURCE_DATE_EPOCH
     }
-    unsetenv SOURCE_DATE_EPOCH
 
     if { $failure == "" } {
 	set got [binutils_run $AR "rcU $u_first_archive $object"]
@@ -697,8 +697,6 @@ proc zero_symbol_coff_armap { } {
 
     if { $had_sde } {
 	setenv SOURCE_DATE_EPOCH $saved_sde
-    } else {
-	unsetenv SOURCE_DATE_EPOCH
     }
 
     if { $failure != "" } {
