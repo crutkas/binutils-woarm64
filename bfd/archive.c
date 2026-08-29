@@ -2301,7 +2301,8 @@ _bfd_write_archive_contents (bfd *arch)
 	 stable across runs.  D zeroes the map date; the COFF writer already
 	 hardcodes the map uid and gid to zero either way.  An archive with
 	 no symbol map, from rcS or from members that define no symbols, is
-	 reproducible without D.  */
+	 reproducible without D.  These are additive, not alternatives -- an
+	 archive can differ by both at once.  */
       if ((current->flags & BFD_IN_MEMORY) != 0
 	  && current->my_archive == NULL
 	  && bfd_get_filename (current) != NULL)
