@@ -1539,8 +1539,11 @@ aarch64_page_pair_path_preserves_reg
 	  bool is_literal = (between & 0x3b000000) == 0x18000000;
 	  bool is_exclusive = (between & 0x3f000000) == 0x08000000;
 	  bool is_atomic = (between & 0x3b200c00) == 0x38200000;
+	  bool is_single = (between & 0x3a000000) == 0x38000000;
 	  bool is_register_offset
 	    = (between & 0x3b200c00) == 0x38200800;
+	  bool is_simd_struct
+	    = (between & 0x3e000000) == 0x0c000000;
 	  bool is_simd_struct_post
 	    = (between & 0x3e800000) == 0x0c800000;
 	  unsigned int address_mode = (between >> 10) & 3;
@@ -1553,9 +1556,11 @@ aarch64_page_pair_path_preserves_reg
 		   : ((between & (1 << 24)) == 0
 		      && (address_mode == 1 || address_mode == 3)))));
 
-	  /* Atomic instructions have additional explicit or implicit register
-	     operands.  Do not infer page-register preservation through them.  */
-	  if (is_exclusive
+	  /* Atomic and unknown load/store classes can have additional explicit
+	     or implicit operands.  Do not infer register preservation through
+	     instructions whose complete GPR dataflow is not decoded here.  */
+	  if ((!is_pair && !is_literal && !is_single && !is_simd_struct)
+	      || is_exclusive
 	      || is_atomic
 	      || (between & 0x1f) == page_reg
 	      || (is_pair && ((between >> 10) & 0x1f) == page_reg)
