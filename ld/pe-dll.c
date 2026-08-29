@@ -1538,6 +1538,8 @@ aarch64_page_pair_path_preserves_reg
 	  bool is_pair = (between & 0x3a000000) == 0x28000000;
 	  bool is_literal = (between & 0x3b000000) == 0x18000000;
 	  bool is_exclusive = (between & 0x3f000000) == 0x08000000;
+	  bool is_exclusive_pair
+	    = is_exclusive && (between & (1 << 21)) != 0;
 	  bool is_simd_struct_post
 	    = (between & 0x3e800000) == 0x0c800000;
 	  unsigned int address_mode = (between >> 10) & 3;
@@ -1552,6 +1554,8 @@ aarch64_page_pair_path_preserves_reg
 
 	  if ((between & 0x1f) == page_reg
 	      || (is_pair && ((between >> 10) & 0x1f) == page_reg)
+	      || (is_exclusive_pair
+		  && ((between >> 10) & 0x1f) == page_reg)
 	      || (is_exclusive && ((between >> 16) & 0x1f) == page_reg)
 	      || (writes_back && ((between >> 5) & 0x1f) == page_reg)
 	      || (!is_literal
