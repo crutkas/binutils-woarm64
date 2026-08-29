@@ -158,6 +158,11 @@ if {[istarget "aarch64-*-pe*"]
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-stress.s}
 	{} "aarch64-auto-import-stress.exe"}
+      {"AArch64 auto-import permits unrelated register-offset access"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-register-offset-safe.s}
+	{} "aarch64-auto-import-register-offset-safe.exe"}
       {"AArch64 auto-import stubs without pseudo-relocations"
 	"--entry entry --enable-auto-import --disable-runtime-pseudo-reloc"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-function.s}
