@@ -108,8 +108,16 @@ if {[istarget i*86-*-cygwin*]
     run_ld_link_tests $pe_tests
 }
 
-if {[istarget "aarch64-*-pe*"] || [istarget "aarch64-*-mingw*"]} {
-    run_dump_test "pe-aarch64"
+if {[istarget "aarch64-*-pe*"]
+    || [istarget "aarch64-*-mingw*"]
+    || [istarget "aarch64-*-cygwin*"]} {
+    if {![istarget "aarch64-*-cygwin*"]} {
+	run_dump_test "pe-aarch64"
+    }
+    run_dump_test "aarch64-pdata"
+    run_dump_test "aarch64-weak-relocs"
+    run_dump_test "aarch64-weak-undef"
+    run_dump_test "aarch64-secidx-tail"
 
     set pe_tests {
       {"aarch64" "--image-base 0x1000" "" "" {aarch64a.s aarch64b.s}
@@ -118,9 +126,148 @@ if {[istarget "aarch64-*-pe*"] || [istarget "aarch64-*-mingw*"]} {
 	{{objdump -s secrel_64.d}} "secrel.x"}
       {".secidx" "--disable-reloc-section" "" "" {secidx1.s secidx2.s}
 	{{objdump -s secidx_aarch64.d}} "secidx.x"}
+      {"AArch64 weak references"
+	"--entry entry --image-base=0x1000 --section-start=.data=0x5000"
+	"" "" {aarch64-weak.s}
+	{{objdump -d aarch64-weak.d}} "aarch64-weak.exe"}
+      {"AArch64 ADDR32 overflow" "--entry entry" "" ""
+	{aarch64-addr32-overflow.s}
+	{{ld aarch64-addr32-overflow.l}} "aarch64-addr32-overflow.exe"}
+      {"AArch64 auto-import DLL"
+	"-shared --entry dyn_f --export-all-symbols --out-implib tmpdir/libaarch64-auto-import.a"
+	"" "" {aarch64-auto-import-dll.s} {} "aarch64-auto-import.dll"}
+      {"AArch64 auto-import stubs"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import.s}
+	{{objdump -d aarch64-auto-import.d}} "aarch64-auto-import.exe"}
+      {"AArch64 auto-import stubs without pseudo-relocations"
+	"--entry entry --enable-auto-import --disable-runtime-pseudo-reloc"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-function.s}
+	{{objdump -d aarch64-auto-import-function.d}}
+	"aarch64-auto-import-function.exe"}
+      {"AArch64 data auto-import without pseudo-relocations"
+	"--entry entry --enable-auto-import --disable-runtime-pseudo-reloc"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-data.s}
+	{{objdump -d aarch64-auto-import-data.d}}
+	"aarch64-auto-import-data.exe"}
+      {"AArch64 auto-import symbols are not auto-exported"
+	"-shared --entry entry --export-all-symbols --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import.s}
+	{{objdump -p aarch64-auto-import-exports.d}}
+	"aarch64-auto-import-client.dll"}
+      {"AArch64 auto-import rejects REL21"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-rel21.s}
+	{{ld aarch64-auto-import-unsupported.l}} "aarch64-auto-import-rel21.exe"}
+      {"AArch64 auto-import rejects orphan low relocation"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-orphan.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-orphan.exe"}
+      {"AArch64 auto-import rejects mismatched addends"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-mismatch.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-mismatch.exe"}
+      {"AArch64 auto-import rejects an aliasing store"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-alias-store.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-alias-store.exe"}
+      {"AArch64 auto-import stub range"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2 --section-start=.fartext=0x150000000"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-far.s}
+	{{ld aarch64-auto-import-range.l}} "aarch64-auto-import-far.exe"}
     }
 
     run_ld_link_tests $pe_tests
+
+    # A short import (ILF) object: the 20 byte ILF header followed by the
+    # imported symbol name and the source DLL name.  BFD does not keep
+    # these bytes when it opens such a file -- pe_ILF_build_a_bfd throws
+    # the file away and substitutes a synthesized in-memory COFF image
+    # describing the import thunk -- which is what made this object a
+    # regression test for the archive writer as well as for the thunk.
+    set short_import_object "tmpdir/aarch64-short-import.obj"
+    set short_import_archive "tmpdir/libaarch64-short-import.a"
+    set short_import_file [open $short_import_object "wb"]
+    fconfigure $short_import_file -translation binary -encoding binary
+    puts -nonewline $short_import_file [binary format H* \
+      "0000ffff000064aa000000001700000000000400"]
+    puts -nonewline $short_import_file "short_import\x00short.dll\x00"
+    close $short_import_file
+
+    # An ILF object placed in an archive must reach the linker unchanged.
+    # bfd/archive.c copies each member byte for byte out of the BFD it was
+    # read from, but building the archive symbol map calls
+    # bfd_check_format on every member, and for an ILF object that
+    # replaces the member's iostream with the generated image described
+    # above.  Copying through the member then wrote the leading bytes of
+    # that generated image into the archive instead of the object, so the
+    # member lost its 00 00 ff ff ILF signature and ld rejected the whole
+    # archive with "file format not recognized".  Check the stored bytes
+    # directly, before any link, so that a regression is reported as the
+    # archive defect it is rather than as a link failure.
+    if {[ar_simple_create $ar "" $short_import_archive $short_import_object]} {
+	set orig [open $short_import_object "rb"]
+	fconfigure $orig -translation binary -encoding binary
+	set orig_bytes [read $orig]
+	close $orig
+
+	set archived [open $short_import_archive "rb"]
+	fconfigure $archived -translation binary -encoding binary
+	set archive_bytes [read $archived]
+	close $archived
+
+	if {[string first $orig_bytes $archive_bytes] >= 0} {
+	    pass "AArch64 short import object survives archiving"
+	} else {
+	    fail "AArch64 short import object survives archiving"
+	}
+    } else {
+	unresolved "AArch64 short import object survives archiving"
+    }
+
+    if {[ar_simple_create $ar "" $short_import_archive $short_import_object]} {
+	run_ld_link_tests [list [list \
+	  "AArch64 short import thunk" "--entry entry" $short_import_archive "" \
+	  {aarch64-short-import.s} {{objdump -d aarch64-short-import.d}} \
+	  "aarch64-short-import.exe"]]
+    } else {
+	unsupported "AArch64 short import thunk"
+    }
+
+    # gas cannot emit a relocation that runs off the end of its own section,
+    # so this object is written out by hand.  It holds a single five byte
+    # .rdata section whose only relocation is a two byte
+    # IMAGE_REL_ARM64_SECTION at offset 4, leaving one byte of headroom.
+    # The relocation does not fit, so the link must fail closed with the
+    # deliberate bad reloc address diagnostic instead of writing past the
+    # section.  This is the negative counterpart of aarch64-secidx-tail,
+    # where the same relocation exactly fills the final two bytes.
+    set secidx_oob_object "tmpdir/aarch64-secidx-oob.obj"
+    # COFF header: machine 0xaa64, 1 section, symtab at 0x4b, 1 symbol.
+    set secidx_oob_hex "64aa0100000000004b0000000100000000000000"
+    # Section header: ".rdata", SizeOfRawData 5, data at 0x3c, relocs at
+    # 0x41, 1 relocation, characteristics data/align-1/read.
+    append secidx_oob_hex "2e72646174610000000000000000000005000000"
+    append secidx_oob_hex "3c00000041000000000000000100000040001040"
+    # Section contents, then the relocation: VirtualAddress 4, symbol 0,
+    # type 13 (IMAGE_REL_ARM64_SECTION).
+    append secidx_oob_hex "112233445504000000000000000d00"
+    # Symbol "entry": undefined external, no auxiliaries.  Then an empty
+    # string table.
+    append secidx_oob_hex "656e74727900000000000000000000000200"
+    append secidx_oob_hex "04000000"
+
+    set secidx_oob_file [open $secidx_oob_object "wb"]
+    fconfigure $secidx_oob_file -translation binary -encoding binary
+    puts -nonewline $secidx_oob_file [binary format H* $secidx_oob_hex]
+    close $secidx_oob_file
+
+    run_ld_link_tests [list [list \
+      "AArch64 section index relocation past the end of a section" \
+      "--entry entry" $secidx_oob_object "" \
+      {aarch64-secidx-oob.s} {{ld aarch64-secidx-oob.l}} \
+      "aarch64-secidx-oob.exe"]]
 }
 
 run_dump_test "image_size"

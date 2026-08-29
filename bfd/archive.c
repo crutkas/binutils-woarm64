@@ -2233,13 +2233,96 @@ _bfd_write_archive_contents (bfd *arch)
        current = current->archive_next)
     {
       bfd_size_type remaining = arelt_size (current);
+      FILE *from_file = NULL;
 
       /* Write ar header.  */
       if (!_bfd_write_ar_hdr (arch, current))
 	goto input_err;
       if (bfd_is_thin_archive (arch))
 	continue;
-      if (bfd_seek (current, 0, SEEK_SET) != 0)
+
+      /* An archive member is copied into the archive byte for byte from
+	 whatever it was read from.  For a member that lives in the file
+	 system that source is the file, but checking a member's format
+	 above can replace its iostream with a synthesized in-memory image
+	 that is not the file's contents at all.  peicode.h does exactly
+	 that for a short import (ILF) object: pe_ILF_build_a_bfd discards
+	 the file and substitutes a much larger generated COFF image, so
+	 reading through the member BFD here would copy that generated
+	 buffer -- and only the leading arelt_size bytes of it -- into the
+	 archive in place of the real object.  The result is a member whose
+	 header length is right but whose contents are unrelated bytes, so
+	 the ILF signature is gone and the member no longer has a
+	 recognisable file format.
+
+	 Copy from the file itself whenever the member has been switched to
+	 an in-memory image yet still names a file whose size is exactly the
+	 length recorded in the header, which is the length that was taken
+	 from that file before any format check ran.
+
+	 Known scope limit.  Requiring my_archive == NULL confines this to
+	 members that did not come from an already-open archive.  What
+	 decides the outcome is therefore the member's provenance, not the
+	 ar subcommand: an ILF object being newly added is repaired, whether
+	 by cr, Dcr, r or q, while an ILF member that merely happens to be
+	 sitting in an archive that is being rewritten for some other reason
+	 -- q appending a different member, r replacing one, d deleting one,
+	 or ranlib regenerating the index -- is still reached through the
+	 opened archive and is still corrupted.  ILF substitution in
+	 pe_bfd_object_p/pe_ILF_object_p keys only on the leading 0000ffff
+	 magic and is independent of my_archive, so those rewrite paths
+	 remain broken exactly as they already were without this change.
+	 This is therefore incomplete coverage of a pre-existing defect
+	 rather than a new one; repairing them needs the substitution
+	 itself to stop discarding the file, which is left to separate work.
+
+	 Note for anyone changing this: the ld-pe regression test that
+	 covers the repaired case builds its archive with ar_simple_create,
+	 which is ar rc, so the test suite only ever exercises the
+	 newly-added provenance.  Nothing in ld/testsuite/ld-pe/pe.exp runs
+	 ranlib or ar q, r or d, so a green suite says nothing either way
+	 about the rewrite paths described above; they were measured by
+	 hand.  Any fix for them needs its own coverage.
+
+	 The stat and the subsequent open are not atomic, so a member file
+	 replaced in between could be copied in its new form.  That window
+	 is not exploited by any flow here, where the file was read moments
+	 earlier to build the header.
+
+	 Comparing two archives byte for byte, as a caller might do to check
+	 this code against an older ar, needs the D flag.  Two timestamps
+	 vary independently without it.  The symbol map member's date is the
+	 moment of generation, so an archive carrying a symbol map differs
+	 between runs even when every input is unchanged, unless both runs
+	 land in the same wall-clock second; for COFF that date is a plain
+	 time (NULL) in _bfd_coff_write_armap, which is what
+	 BFD_JUMP_TABLE_ARCHIVE (_bfd_archive_coff) selects here, not the
+	 archive mtime plus ARMAP_TIME_OFFSET that _bfd_bsd_write_armap
+	 uses.  Each real member's date is that file's own mtime and is
+	 stable across runs.  D zeroes the map date; the COFF writer already
+	 hardcodes the map uid and gid to zero either way.  An archive with
+	 no symbol map, from rcS or from members that define no symbols, is
+	 reproducible without D.  These are additive, not alternatives -- an
+	 archive can differ by both at once.  */
+      if ((current->flags & BFD_IN_MEMORY) != 0
+	  && current->my_archive == NULL
+	  && bfd_get_filename (current) != NULL)
+	{
+	  struct stat st;
+
+	  if (stat (bfd_get_filename (current), &st) == 0
+	      && (bfd_size_type) st.st_size == remaining)
+	    {
+	      from_file = _bfd_real_fopen (bfd_get_filename (current), FOPEN_RB);
+	      if (from_file == NULL)
+		{
+		  bfd_set_error (bfd_error_system_call);
+		  goto input_err;
+		}
+	    }
+	}
+
+      if (from_file == NULL && bfd_seek (current, 0, SEEK_SET) != 0)
 	goto input_err;
 
       while (remaining)
@@ -2249,12 +2332,28 @@ _bfd_write_archive_contents (bfd *arch)
 	  if (amt > remaining)
 	    amt = remaining;
 	  errno = 0;
-	  if (bfd_read (buffer, amt, current) != amt)
+	  if (from_file != NULL)
+	    {
+	      if (fread (buffer, 1, amt, from_file) != amt)
+		{
+		  fclose (from_file);
+		  bfd_set_error (bfd_error_system_call);
+		  goto input_err;
+		}
+	    }
+	  else if (bfd_read (buffer, amt, current) != amt)
 	    goto input_err;
 	  if (bfd_write (buffer, amt, arch) != amt)
-	    goto input_err;
+	    {
+	      if (from_file != NULL)
+		fclose (from_file);
+	      goto input_err;
+	    }
 	  remaining -= amt;
 	}
+
+      if (from_file != NULL)
+	fclose (from_file);
 
       if ((arelt_size (current) % 2) == 1)
 	{
