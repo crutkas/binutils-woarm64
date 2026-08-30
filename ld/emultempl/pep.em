@@ -830,11 +830,24 @@ gld${EMULATION_NAME}_handle_option (int optc)
       pep_dll_enable_reloc_section = 1;
       break;
     case OPTION_DISABLE_RELOC_SECTION:
+#if defined(COFF_WITH_peAArch64)
+      einfo (_("%F%P: --disable-reloc-section is not supported for "
+	       "AArch64 PE targets\n"));
+#else
       pep_dll_enable_reloc_section = 0;
-      /* fall through */
-    case OPTION_DISABLE_DYNAMIC_BASE:
       pe_dll_characteristics &= ~ IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE;
-      /* fall through */
+      pe_dll_characteristics &= ~ IMAGE_DLL_CHARACTERISTICS_HIGH_ENTROPY_VA;
+#endif
+      break;
+    case OPTION_DISABLE_DYNAMIC_BASE:
+#if defined(COFF_WITH_peAArch64)
+      einfo (_("%F%P: --disable-dynamicbase is not supported for "
+	       "AArch64 PE targets\n"));
+#else
+      pe_dll_characteristics &= ~ IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE;
+      pe_dll_characteristics &= ~ IMAGE_DLL_CHARACTERISTICS_HIGH_ENTROPY_VA;
+#endif
+      break;
     case OPTION_DISABLE_HIGH_ENTROPY_VA:
       pe_dll_characteristics &= ~ IMAGE_DLL_CHARACTERISTICS_HIGH_ENTROPY_VA;
       break;

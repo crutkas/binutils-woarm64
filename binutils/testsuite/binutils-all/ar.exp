@@ -182,6 +182,50 @@ proc long_filenames { bfdtests } {
     pass $testname
 }
 
+# Verify that native Windows extraction is not constrained by MAX_PATH.
+
+proc long_path_extract { } {
+    global AR
+
+    set testname "ar long extraction path"
+    set member "libgettextlib_la-scratch_buffer_grow_preserve.o"
+    set archive "tmpdir/long-path.a"
+    set source "tmpdir/$member"
+    set output_dir "tmpdir"
+
+    remote_file host delete $archive
+    remote_file host delete $source
+
+    set f [open $source w]
+    puts $f "long path"
+    close $f
+
+    set got [binutils_run $AR "rcs $archive $source"]
+    if ![string match "" $got] {
+	verbose -log $got
+	fail $testname
+	return
+    }
+    remote_file host delete $source
+
+    while {[string length [file normalize "$output_dir/$member"]] <= 260} {
+	set output_dir [file join $output_dir \
+			    "long-path-component-0123456789abcdef"]
+    }
+    file mkdir $output_dir
+
+    set got [binutils_run $AR "x --output=$output_dir $archive"]
+    set got [prune_warnings $got]
+    if {![string match "" $got]
+	|| ![remote_file host exists "$output_dir/$member"]} {
+	verbose -log $got
+	fail $testname
+	return
+    }
+
+    pass $testname
+}
+
 # Test building the symbol table.
 
 proc symbol_table { } {
@@ -537,8 +581,8 @@ proc zero_symbol_coff_armap { } {
     set had_sde [info exists ::env(SOURCE_DATE_EPOCH)]
     if { $had_sde } {
 	set saved_sde $::env(SOURCE_DATE_EPOCH)
+	unsetenv SOURCE_DATE_EPOCH
     }
-    unsetenv SOURCE_DATE_EPOCH
 
     if { $failure == "" } {
 	set got [binutils_run $AR "rcU $u_first_archive $object"]
@@ -697,8 +741,6 @@ proc zero_symbol_coff_armap { } {
 
     if { $had_sde } {
 	setenv SOURCE_DATE_EPOCH $saved_sde
-    } else {
-	unsetenv SOURCE_DATE_EPOCH
     }
 
     if { $failure != "" } {
@@ -1304,6 +1346,10 @@ if { [file exists $base_dir/bfdtest1] && [file exists $base_dir/bfdtest2] } {
 	thin_archive $bfdtests
 	thin_archive_with_nested $bfdtests
     }
+}
+
+if {[ishost "*-*-mingw*"] && ![is_remote host]} {
+    long_path_extract
 }
 
 symbol_table
