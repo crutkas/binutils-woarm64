@@ -158,11 +158,25 @@ if {[istarget "aarch64-*-pe*"]
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-stress.s}
 	{} "aarch64-auto-import-stress.exe"}
+      {"AArch64 auto-import large branch relocation section"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-branch-stress.s}
+	{} "aarch64-auto-import-branch-stress.exe"}
       {"AArch64 auto-import permits unrelated register-offset access"
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" ""
 	{aarch64-auto-import-register-offset-safe.s}
 	{} "aarch64-auto-import-register-offset-safe.exe"}
+      {"AArch64 auto-import permits register opcode and immediate fields"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-register-opcode-safe.s}
+	{} "aarch64-auto-import-register-opcode-safe.exe"}
+      {"AArch64 auto-import gettext msgcmp geometry"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-gettext.s}
+	{} "aarch64-auto-import-gettext.exe"}
       {"AArch64 auto-import stubs without pseudo-relocations"
 	"--entry entry --enable-auto-import --disable-runtime-pseudo-reloc"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-function.s}
@@ -191,14 +205,79 @@ if {[istarget "aarch64-*-pe*"]
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-cross-branch.s}
 	{{ld aarch64-auto-import-pair.l}}
 	"aarch64-auto-import-cross-branch.exe"}
-      {"AArch64 auto-import rejects BC.cond pairing"
+      {"AArch64 auto-import permits BC.cond pairing"
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-bc-cond.s}
-	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-bc-cond.exe"}
+	{} "aarch64-auto-import-bc-cond.exe"}
+      {"AArch64 auto-import permits safe branch skipping low relocation"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-branch-skip-safe.s}
+	{} "aarch64-auto-import-branch-skip-safe.exe"}
+      {"AArch64 auto-import permits pure clobber on branch skipping low"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-branch-skip-clobber.s}
+	{} "aarch64-auto-import-branch-skip-clobber.exe"}
       {"AArch64 auto-import rejects clobbered page register"
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-clobber.s}
 	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-clobber.exe"}
+      {"AArch64 auto-import rejects conditional-compare source use"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-conditional-compare.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-conditional-compare.exe"}
+      {"AArch64 auto-import rejects branch source use"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-branch-source.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-branch-source.exe"}
+      {"AArch64 auto-import rejects use on branch skipping low relocation"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-branch-skip-use.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-branch-skip-use.exe"}
+      {"AArch64 auto-import rejects branch before page definition"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-back-branch.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-back-branch.exe"}
+      {"AArch64 auto-import rejects unresolved conditional branch"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-branch-reloc.s aarch64-auto-import-branch-target.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-branch-reloc.exe"}
+      {"AArch64 auto-import rejects escaped branch re-entry"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-branch-reentry.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-branch-reentry.exe"}
+      {"AArch64 auto-import preserves nonvolatile register across call"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-call.s}
+	{} "aarch64-auto-import-call.exe"}
+      {"AArch64 auto-import rejects volatile register across call"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-call-volatile.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-call-volatile.exe"}
+      {"AArch64 auto-import preserves nonvolatile register across indirect call"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-call-indirect.s}
+	{} "aarch64-auto-import-call-indirect.exe"}
+      {"AArch64 auto-import rejects volatile register across indirect call"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-call-indirect-volatile.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-call-indirect-volatile.exe"}
       {"AArch64 auto-import rejects sign-load clobber"
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-sign-load.s}
@@ -230,11 +309,58 @@ if {[istarget "aarch64-*-pe*"]
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-simd-post.s}
 	{{ld aarch64-auto-import-pair.l}}
 	"aarch64-auto-import-simd-post.exe"}
+      {"AArch64 auto-import permits SIMD destination register number"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-simd-destination-safe.s}
+	{} "aarch64-auto-import-simd-destination-safe.exe"}
       {"AArch64 auto-import rejects unrelocated source use"
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-source-use.s}
 	{{ld aarch64-auto-import-pair.l}}
 	"aarch64-auto-import-source-use.exe"}
+      {"AArch64 auto-import rejects logical-register source use"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-logical-source.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-logical-source.exe"}
+      {"AArch64 auto-import rejects extract-register source use"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-extract-source.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-extract-source.exe"}
+      {"AArch64 auto-import rejects implicit x17 clobber"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-pac17.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-pac17.exe"}
+      {"AArch64 auto-import rejects implicit x16 use"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-implicit-x16.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-implicit-x16.exe"}
+      {"AArch64 auto-import rejects implicit x30 clobber"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-pac30.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-pac30.exe"}
+      {"AArch64 auto-import rejects implicit x30 zero-modifier clobber"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-pac30-zero.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-pac30-zero.exe"}
+      {"AArch64 auto-import rejects return-register source use"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-ret-source.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-ret-source.exe"}
+      {"AArch64 auto-import rejects exception path"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-svc.s}
+	{{ld aarch64-auto-import-pair.l}} "aarch64-auto-import-svc.exe"}
+      {"AArch64 auto-import rejects three-source accumulator use"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-three-source.s}
+	{{ld aarch64-auto-import-pair.l}}
+	"aarch64-auto-import-three-source.exe"}
       {"AArch64 auto-import rejects register-offset source use"
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" ""
@@ -246,6 +372,11 @@ if {[istarget "aarch64-*-pe*"]
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-mops.s}
 	{{ld aarch64-auto-import-pair.l}}
 	"aarch64-auto-import-mops.exe"}
+      {"AArch64 auto-import gettext loop geometry"
+	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
+	"tmpdir/libaarch64-auto-import.a" ""
+	{aarch64-auto-import-gettext-loop.s}
+	{} "aarch64-auto-import-gettext-loop.exe"}
       {"AArch64 auto-import rejects mismatched addends"
 	"--entry entry --enable-auto-import --enable-runtime-pseudo-reloc-v2"
 	"tmpdir/libaarch64-auto-import.a" "" {aarch64-auto-import-mismatch.s}

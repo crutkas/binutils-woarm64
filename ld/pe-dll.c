@@ -1449,12 +1449,29 @@ struct aarch64_low_reloc_index
 
 struct aarch64_auto_import_reloc_cache
 {
+  arelent **relocs;
+  int reloc_count;
   arelent **low_pages;
   int *low_page_indices;
   bool *page_has_low;
   struct aarch64_low_reloc_index *low_relocs;
   int low_count;
 };
+
+static bool
+aarch64_has_branch_reloc_at
+  (const struct aarch64_auto_import_reloc_cache *cache, bfd_vma address)
+{
+  int i;
+
+  for (i = 0; i < cache->reloc_count; i++)
+    if (cache->relocs[i]->address == address
+	&& (cache->relocs[i]->howto->type == IMAGE_REL_ARM64_BRANCH26
+	    || cache->relocs[i]->howto->type == IMAGE_REL_ARM64_BRANCH19
+	    || cache->relocs[i]->howto->type == IMAGE_REL_ARM64_BRANCH14))
+      return true;
+  return false;
+}
 
 static int
 aarch64_low_reloc_index_compare (const void *first, const void *second)
@@ -1498,6 +1515,530 @@ aarch64_page_has_low_reloc_at
 }
 
 static bool
+aarch64_direct_branch_target (bfd_vma address, uint32_t insn,
+			      bfd_vma *target)
+{
+  bfd_signed_vma offset;
+
+  if ((insn & 0x7c000000) == 0x14000000)
+    {
+      offset = insn & 0x03ffffff;
+      if ((offset & 0x02000000) != 0)
+	offset |= ~((bfd_signed_vma) 0x03ffffff);
+    }
+  else if ((insn & 0xff000000) == 0x54000000
+	   || (insn & 0x7e000000) == 0x34000000)
+    {
+      offset = (insn >> 5) & 0x7ffff;
+      if ((offset & 0x40000) != 0)
+	offset |= ~((bfd_signed_vma) 0x7ffff);
+    }
+  else if ((insn & 0x7e000000) == 0x36000000)
+    {
+      offset = (insn >> 5) & 0x3fff;
+      if ((offset & 0x2000) != 0)
+	offset |= ~((bfd_signed_vma) 0x3fff);
+    }
+  else
+    return false;
+
+  offset *= 4;
+  if (offset < 0 && (bfd_vma) -offset > address)
+    return false;
+  if (offset > 0 && (bfd_vma) offset > ~(bfd_vma) 0 - address)
+    return false;
+  *target = offset < 0 ? address - (bfd_vma) -offset : address + offset;
+  return true;
+}
+
+static bool
+aarch64_insn_preserves_page_reg
+  (arelent *page_rel,
+   const struct aarch64_auto_import_reloc_cache *cache,
+   bfd_vma address, uint32_t insn, unsigned int page_reg)
+{
+  unsigned int op0 = (insn >> 25) & 0xf;
+
+  if (((page_reg == 16 || page_reg == 17)
+       && (insn == 0xd503211f || insn == 0xd503215f
+	   || insn == 0xd503219f || insn == 0xd50321df))
+      || (page_reg == 16 && insn == 0xd503251f)
+      || (page_reg == 30
+	  && (insn == 0xd50320ff || insn == 0xd503231f
+	      || insn == 0xd503233f || insn == 0xd503235f
+	      || insn == 0xd503237f || insn == 0xd503239f
+	      || insn == 0xd50323bf || insn == 0xd50323df
+	      || insn == 0xd50323ff)))
+    return false;
+  if ((insn & 0xfffff01f) == 0xd503201f)
+    return true;
+
+  if (op0 == 4 || op0 == 6 || op0 == 12 || op0 == 14)
+    {
+      bool is_pair = (insn & 0x3a000000) == 0x28000000;
+      bool is_literal = (insn & 0x3b000000) == 0x18000000;
+      bool is_exclusive = (insn & 0x3f000000) == 0x08000000;
+      bool is_atomic = (insn & 0x3b200c00) == 0x38200000;
+      bool is_single = (insn & 0x3a000000) == 0x38000000;
+      bool is_register_offset = (insn & 0x3b200c00) == 0x38200800;
+      bool is_simd_struct = (insn & 0x3e000000) == 0x0c000000;
+      bool is_simd_struct_post = (insn & 0x3e800000) == 0x0c800000;
+      bool rt_is_gpr = (insn & (1 << 26)) == 0;
+      unsigned int address_mode = (insn >> 10) & 3;
+      bool writes_back
+	= (is_simd_struct_post
+	   || (!is_literal
+	       && (is_pair
+		   ? (((insn >> 23) & 3) == 1
+		      || ((insn >> 23) & 3) == 3)
+		   : ((insn & (1 << 24)) == 0
+		      && (address_mode == 1 || address_mode == 3)))));
+
+      /* Atomic and unknown load/store classes can have additional explicit
+	 or implicit operands.  Do not infer register preservation through
+	 instructions whose complete GPR dataflow is not decoded here.  */
+      return (!(!is_pair && !is_literal && !is_single && !is_simd_struct)
+	      && !is_exclusive
+	      && !is_atomic
+	      && (!rt_is_gpr || (insn & 0x1f) != page_reg)
+	      && (!is_pair || !rt_is_gpr
+		  || ((insn >> 10) & 0x1f) != page_reg)
+	      && (!(is_register_offset || is_simd_struct_post)
+		  || ((insn >> 16) & 0x1f) != page_reg)
+	      && (!writes_back || ((insn >> 5) & 0x1f) != page_reg)
+	      && (is_literal
+		  || ((insn >> 5) & 0x1f) != page_reg
+		  || aarch64_page_has_low_reloc_at
+		       (cache, page_rel, address)));
+    }
+  else
+    {
+      bool is_pc_relative = (insn & 0x1f000000) == 0x10000000;
+      bool is_move_wide = (insn & 0x1f800000) == 0x12800000;
+      bool is_data_processing_three_source
+	= (insn & 0x1f000000) == 0x1b000000;
+      bool is_data_processing_one_source
+	= (insn & 0x5fe00000) == 0x5ac00000;
+      bool is_extract = (insn & 0x7f800000) == 0x13800000;
+      bool is_conditional_compare
+	= (insn & 0x1fe00000) == 0x1a400000;
+      bool is_conditional_compare_immediate
+	= (insn & 0x1fe00800) == 0x1a400800;
+      bool uses_page_reg
+	= (!is_pc_relative
+	   && !is_move_wide
+	   && ((insn >> 5) & 0x1f) == page_reg);
+
+      if (op0 == 5 || op0 == 13 || is_extract)
+	uses_page_reg
+	  = (uses_page_reg
+	     || (is_data_processing_three_source
+		 && ((insn >> 10) & 0x1f) == page_reg)
+	     || ((!is_data_processing_one_source
+		  && !is_conditional_compare_immediate)
+		 && ((insn >> 16) & 0x1f) == page_reg)
+	     || (is_extract && ((insn >> 16) & 0x1f) == page_reg));
+
+      return ((!is_conditional_compare && (insn & 0x1f) != page_reg)
+	      || (is_conditional_compare && !uses_page_reg))
+	     && (!uses_page_reg
+		 || aarch64_page_has_low_reloc_at
+		      (cache, page_rel, address));
+    }
+}
+
+static bool
+aarch64_insn_clobbers_page_reg_without_use
+  (uint32_t insn, unsigned int page_reg)
+{
+  unsigned int op0 = (insn >> 25) & 0xf;
+  bool is_pair;
+  bool is_literal;
+  bool is_exclusive;
+  bool is_atomic;
+  bool is_single;
+  bool is_register_offset;
+  bool is_simd_struct;
+  bool is_simd_struct_post;
+  unsigned int address_mode;
+  bool writes_back;
+  bool clobbers;
+
+  if (op0 != 4 && op0 != 6 && op0 != 12 && op0 != 14)
+    return false;
+  is_pair = (insn & 0x3a000000) == 0x28000000;
+  is_literal = (insn & 0x3b000000) == 0x18000000;
+  is_exclusive = (insn & 0x3f000000) == 0x08000000;
+  is_atomic = (insn & 0x3b200c00) == 0x38200000;
+  is_single = (insn & 0x3a000000) == 0x38000000;
+  is_register_offset = (insn & 0x3b200c00) == 0x38200800;
+  is_simd_struct = (insn & 0x3e000000) == 0x0c000000;
+  is_simd_struct_post = (insn & 0x3e800000) == 0x0c800000;
+  if ((!is_pair && !is_literal && !is_single && !is_simd_struct)
+      || is_exclusive || is_atomic || (insn & (1 << 26)) != 0)
+    return false;
+
+  address_mode = (insn >> 10) & 3;
+  writes_back
+    = (!is_literal
+       && (is_pair
+	   ? (((insn >> 23) & 3) == 1 || ((insn >> 23) & 3) == 3)
+	   : ((insn & (1 << 24)) == 0
+	      && (address_mode == 1 || address_mode == 3))));
+  if ((!is_literal && ((insn >> 5) & 0x1f) == page_reg)
+      || ((is_register_offset || is_simd_struct_post)
+	  && ((insn >> 16) & 0x1f) == page_reg)
+      || (writes_back && ((insn >> 5) & 0x1f) == page_reg))
+    return false;
+
+  clobbers = ((insn & 0x1f) == page_reg
+	      || (is_pair && ((insn >> 10) & 0x1f) == page_reg));
+  return clobbers && (is_literal || (insn & (1 << 22)) != 0);
+}
+
+static bool
+aarch64_add_cfg_edge
+  (size_t from, size_t to, size_t count, size_t capacity,
+   size_t *edge_count, size_t *first_predecessor,
+   size_t *predecessor, size_t *next_predecessor,
+   size_t *first_successor, size_t *second_successor)
+{
+  size_t edge;
+
+  if (to >= count)
+    return true;
+  edge = (*edge_count)++;
+  if (edge >= capacity || second_successor[from] != (size_t) -1)
+    return false;
+  predecessor[edge] = from;
+  next_predecessor[edge] = first_predecessor[to];
+  first_predecessor[to] = edge;
+  if (first_successor[from] == (size_t) -1)
+    first_successor[from] = to;
+  else
+    second_successor[from] = to;
+  return true;
+}
+
+static bool
+aarch64_reaching_path_preserves_reg
+  (asection *section, bfd_vma start, arelent *page_rel, arelent *low_rel,
+   const struct aarch64_auto_import_reloc_cache *cache,
+   unsigned int page_reg)
+{
+  bfd_size_type bfd_count = section->size / 4;
+  size_t count;
+  size_t capacity;
+  size_t edge_count = 0;
+  size_t used = 0;
+  size_t *first_predecessor;
+  size_t *predecessor;
+  size_t *next_predecessor;
+  size_t *first_successor;
+  size_t *second_successor;
+  size_t *work;
+  bool *can_reach;
+  bool *seen;
+  bool *reached_after_low;
+  bfd_byte *contents;
+  bool result = true;
+  bool reached_low = false;
+  size_t i;
+  size_t start_index;
+  size_t target_index;
+
+  if (bfd_count == 0
+      || (bfd_size_type) (size_t) bfd_count != bfd_count)
+    return false;
+  count = (size_t) bfd_count;
+  if ((start & 3) != 0 || (low_rel->address & 3) != 0
+      || start / 4 >= count || low_rel->address / 4 >= count)
+    return false;
+  start_index = start / 4;
+  target_index = low_rel->address / 4;
+  if (count > (size_t) -1 / 2
+      || count > (size_t) -1 / sizeof (*first_predecessor))
+    return false;
+  capacity = count * 2;
+  if (capacity > (size_t) -1 / sizeof (*predecessor))
+    return false;
+
+  first_predecessor = xmalloc (count * sizeof (*first_predecessor));
+  predecessor = xmalloc (capacity * sizeof (*predecessor));
+  next_predecessor = xmalloc (capacity * sizeof (*next_predecessor));
+  first_successor = xmalloc (count * sizeof (*first_successor));
+  second_successor = xmalloc (count * sizeof (*second_successor));
+  work = xmalloc (capacity * sizeof (*work));
+  can_reach = xcalloc (count, sizeof (*can_reach));
+  seen = xcalloc (count, sizeof (*seen));
+  reached_after_low = xcalloc (count, sizeof (*reached_after_low));
+  contents = xmalloc (count * 4);
+  if (!bfd_get_section_contents
+	(section->owner, section, contents, 0, count * 4))
+    {
+      result = false;
+      goto done;
+    }
+  for (i = 0; i < count; i++)
+    {
+      first_predecessor[i] = (size_t) -1;
+      first_successor[i] = (size_t) -1;
+      second_successor[i] = (size_t) -1;
+    }
+
+  for (i = 0; i < count; i++)
+    {
+      bfd_vma address = i * 4;
+      bfd_vma branch_target;
+      uint32_t insn;
+      bool is_direct_branch;
+      bool is_conditional_branch;
+      bool is_compare_branch;
+      bool is_test_branch;
+      bool is_indirect_branch;
+      bool is_indirect_call;
+
+      insn = bfd_getl32 (contents + address);
+      is_direct_branch = (insn & 0x7c000000) == 0x14000000;
+      is_conditional_branch = (insn & 0xff000000) == 0x54000000;
+      is_compare_branch = (insn & 0x7e000000) == 0x34000000;
+      is_test_branch = (insn & 0x7e000000) == 0x36000000;
+      is_indirect_branch = (insn & 0xfffffc1f) == 0xd61f0000;
+      is_indirect_call = (insn & 0xfffffc1f) == 0xd63f0000;
+
+      if (is_direct_branch || is_conditional_branch
+	  || is_compare_branch || is_test_branch)
+	{
+	  bool target_valid
+	    = aarch64_direct_branch_target (address, insn, &branch_target);
+
+	  if (is_direct_branch && (insn & 0x80000000) != 0)
+	    {
+	      if (!aarch64_add_cfg_edge
+		    (i, i + 1, count, capacity, &edge_count,
+		     first_predecessor, predecessor, next_predecessor,
+		     first_successor, second_successor))
+		{
+		  result = false;
+		  goto done;
+		}
+	    }
+	  else
+	    {
+	      if (target_valid
+		  && (branch_target & 3) == 0
+		  && !aarch64_add_cfg_edge
+		       (i, branch_target / 4, count, capacity, &edge_count,
+			first_predecessor, predecessor, next_predecessor,
+			first_successor, second_successor))
+		{
+		  result = false;
+		  goto done;
+		}
+	      if (!is_direct_branch
+		  && !aarch64_add_cfg_edge
+		       (i, i + 1, count, capacity, &edge_count,
+			first_predecessor, predecessor, next_predecessor,
+			first_successor, second_successor))
+		{
+		  result = false;
+		  goto done;
+		}
+	    }
+	}
+      else if (is_indirect_call)
+	{
+	  if (!aarch64_add_cfg_edge
+		(i, i + 1, count, capacity, &edge_count,
+		 first_predecessor, predecessor, next_predecessor,
+		 first_successor, second_successor))
+	    {
+	      result = false;
+	      goto done;
+	    }
+	}
+      else if (is_indirect_branch)
+	{
+	  if (!aarch64_add_cfg_edge
+		(i, target_index, count, capacity, &edge_count,
+		 first_predecessor, predecessor, next_predecessor,
+		 first_successor, second_successor))
+	    {
+	      result = false;
+	      goto done;
+	    }
+	}
+      else if ((insn & 0xfe000000) != 0xd6000000
+	       && (insn & 0xff000000) != 0xd4000000
+	       && !aarch64_add_cfg_edge
+		    (i, i + 1, count, capacity, &edge_count,
+		     first_predecessor, predecessor, next_predecessor,
+		     first_successor, second_successor))
+	{
+	  result = false;
+	  goto done;
+	}
+    }
+
+  can_reach[target_index] = true;
+  work[used++] = target_index;
+  while (used != 0)
+    {
+      size_t current = work[--used];
+      size_t edge;
+
+      for (edge = first_predecessor[current];
+	   edge != (size_t) -1;
+	   edge = next_predecessor[edge])
+	if (!can_reach[predecessor[edge]])
+	  {
+	    can_reach[predecessor[edge]] = true;
+	    work[used++] = predecessor[edge];
+	  }
+    }
+
+  used = 0;
+  work[used++] = start_index;
+  while (used != 0)
+    {
+      size_t state = work[--used];
+      bool after_low = state >= count;
+      size_t current = after_low ? state - count : state;
+      bfd_vma address = current * 4;
+      uint32_t insn;
+      bool is_direct_branch;
+      bool is_conditional_branch;
+      bool is_compare_branch;
+      bool is_test_branch;
+      bool is_direct_call;
+      bool is_indirect_branch;
+      bool is_indirect_call;
+      bool is_indirect_terminator;
+      bool is_return;
+      bool is_exception;
+      bool is_page_definition;
+
+      if (current == target_index)
+	{
+	  reached_low = true;
+	  after_low = true;
+	}
+      is_page_definition = address == page_rel->address;
+      if (is_page_definition)
+	after_low = false;
+      if (after_low && !can_reach[current])
+	continue;
+      if ((after_low ? reached_after_low[current] : seen[current]))
+	continue;
+      if (after_low)
+	reached_after_low[current] = true;
+      else
+	seen[current] = true;
+      insn = bfd_getl32 (contents + address);
+
+      is_direct_branch = (insn & 0x7c000000) == 0x14000000;
+      is_conditional_branch = (insn & 0xff000000) == 0x54000000;
+      is_compare_branch = (insn & 0x7e000000) == 0x34000000;
+      is_test_branch = (insn & 0x7e000000) == 0x36000000;
+      is_direct_call
+	= is_direct_branch && (insn & 0x80000000) != 0;
+      is_indirect_branch = (insn & 0xfffffc1f) == 0xd61f0000;
+      is_indirect_call = (insn & 0xfffffc1f) == 0xd63f0000;
+      is_indirect_terminator
+	= (insn & 0xfe000000) == 0xd6000000;
+      is_return = (insn & 0xfffffc1f) == 0xd65f0000;
+      is_exception = (insn & 0xff000000) == 0xd4000000;
+
+      if ((is_compare_branch || is_test_branch)
+	  && (insn & 0x1f) == page_reg)
+	{
+	  result = false;
+	  break;
+	}
+      if (!is_direct_call
+	  && (is_direct_branch || is_conditional_branch
+	      || is_compare_branch || is_test_branch)
+	  && aarch64_has_branch_reloc_at (cache, address))
+	{
+	  result = false;
+	  break;
+	}
+      if ((is_direct_call || is_indirect_call)
+	  && (page_reg < 19 || page_reg > 29))
+	{
+	  result = false;
+	  break;
+	}
+      if (is_indirect_call && ((insn >> 5) & 0x1f) == page_reg)
+	{
+	  result = false;
+	  break;
+	}
+      if (is_indirect_branch)
+	{
+	  result = false;
+	  break;
+	}
+      if ((is_return && ((insn >> 5) & 0x1f) == page_reg)
+	  || (is_indirect_terminator
+	      && !is_indirect_call && !is_return)
+	  || is_exception)
+	{
+	  result = false;
+	  break;
+	}
+      if (!(is_direct_branch || is_conditional_branch
+	    || is_compare_branch || is_test_branch
+	    || is_indirect_terminator)
+	  && (!after_low || current != target_index)
+	  && !is_page_definition
+	  && !aarch64_insn_preserves_page_reg
+	    (page_rel, cache, address, insn, page_reg))
+	{
+	  if (!can_reach[current]
+	      && aarch64_insn_clobbers_page_reg_without_use
+		   (insn, page_reg))
+	    continue;
+	  result = false;
+	  break;
+	}
+      if (first_successor[current] != (size_t) -1
+	  && (!after_low || can_reach[first_successor[current]])
+	  && !(after_low
+	       ? reached_after_low[first_successor[current]]
+	       : seen[first_successor[current]]))
+	{
+	  work[used++]
+	    = first_successor[current] + (after_low ? count : 0);
+	}
+      if (second_successor[current] != (size_t) -1
+	  && (!after_low || can_reach[second_successor[current]])
+	  && !(after_low
+	       ? reached_after_low[second_successor[current]]
+	       : seen[second_successor[current]]))
+	{
+	  work[used++]
+	    = second_successor[current] + (after_low ? count : 0);
+	}
+    }
+  if (!reached_low)
+    result = false;
+
+done:
+  free (contents);
+  free (reached_after_low);
+  free (can_reach);
+  free (seen);
+  free (work);
+  free (second_successor);
+  free (first_successor);
+  free (next_predecessor);
+  free (predecessor);
+  free (first_predecessor);
+  return result;
+}
+
+static bool
 aarch64_page_pair_path_preserves_reg
   (asection *section, arelent *page_rel, arelent *low_rel,
    const struct aarch64_auto_import_reloc_cache *cache)
@@ -1514,88 +2055,23 @@ aarch64_page_pair_path_preserves_reg
        address < low_rel->address;
        address += 4)
     {
-      uint32_t between;
-      unsigned int op0;
+      uint32_t insn;
 
-      if (!aarch64_get_section_insn (section, address, &between))
+      if (!aarch64_get_section_insn (section, address, &insn))
 	return false;
-
-      /* Do not infer data flow across a branch, call, return, or exception.  */
-      if ((between & 0x7c000000) == 0x14000000
-	  || (between & 0xff000000) == 0x54000000
-	  || (between & 0x7e000000) == 0x34000000
-	  || (between & 0x7e000000) == 0x36000000
-	  || (between & 0xfe000000) == 0xd6000000
-	  || (between & 0xff000000) == 0xd4000000)
+      if ((insn & 0x7c000000) == 0x14000000
+	  || (insn & 0xff000000) == 0x54000000
+	  || (insn & 0x7e000000) == 0x34000000
+	  || (insn & 0x7e000000) == 0x36000000
+	  || (insn & 0xfffffc1f) == 0xd63f0000)
+	return aarch64_reaching_path_preserves_reg
+	  (section, page_rel->address + 4, page_rel, low_rel,
+	   cache, page_reg);
+      if ((insn & 0xfe000000) == 0xd6000000
+	  || (insn & 0xff000000) == 0xd4000000
+	  || !aarch64_insn_preserves_page_reg
+	       (page_rel, cache, address, insn, page_reg))
 	return false;
-
-      /* Treat any matching register field conservatively as a clobber.
-	 Decode load/store destinations separately because an ordinary memory
-	 access reads, rather than overwrites, its base register.  */
-      op0 = (between >> 25) & 0xf;
-      if (op0 == 4 || op0 == 6 || op0 == 12 || op0 == 14)
-	{
-	  bool is_pair = (between & 0x3a000000) == 0x28000000;
-	  bool is_literal = (between & 0x3b000000) == 0x18000000;
-	  bool is_exclusive = (between & 0x3f000000) == 0x08000000;
-	  bool is_atomic = (between & 0x3b200c00) == 0x38200000;
-	  bool is_single = (between & 0x3a000000) == 0x38000000;
-	  bool is_register_offset
-	    = (between & 0x3b200c00) == 0x38200800;
-	  bool is_simd_struct
-	    = (between & 0x3e000000) == 0x0c000000;
-	  bool is_simd_struct_post
-	    = (between & 0x3e800000) == 0x0c800000;
-	  unsigned int address_mode = (between >> 10) & 3;
-	  bool writes_back
-	    = (is_simd_struct_post
-	       || (!is_literal
-	       && (is_pair
-		   ? (((between >> 23) & 3) == 1
-		      || ((between >> 23) & 3) == 3)
-		   : ((between & (1 << 24)) == 0
-		      && (address_mode == 1 || address_mode == 3)))));
-
-	  /* Atomic and unknown load/store classes can have additional explicit
-	     or implicit operands.  Do not infer register preservation through
-	     instructions whose complete GPR dataflow is not decoded here.  */
-	  if ((!is_pair && !is_literal && !is_single && !is_simd_struct)
-	      || is_exclusive
-	      || is_atomic
-	      || (between & 0x1f) == page_reg
-	      || (is_pair && ((between >> 10) & 0x1f) == page_reg)
-	      || ((is_register_offset || is_simd_struct_post)
-		  && ((between >> 16) & 0x1f) == page_reg)
-	      || (writes_back && ((between >> 5) & 0x1f) == page_reg)
-	      || (!is_literal
-		  && ((between >> 5) & 0x1f) == page_reg
-		  && !aarch64_page_has_low_reloc_at (cache, page_rel,
-						     address)))
-	    return false;
-	}
-      else
-	{
-	  bool is_pc_relative
-	    = (between & 0x1f000000) == 0x10000000;
-	  bool is_move_wide
-	    = (between & 0x1f800000) == 0x12800000;
-	  bool uses_page_reg
-	    = (!is_pc_relative
-	       && !is_move_wide
-	       && ((between >> 5) & 0x1f) == page_reg);
-
-	  if (op0 == 5 || op0 == 13)
-	    uses_page_reg
-	      = (uses_page_reg
-		 || ((between >> 10) & 0x1f) == page_reg
-		 || ((between >> 16) & 0x1f) == page_reg);
-
-	  if ((between & 0x1f) == page_reg
-	      || (uses_page_reg
-		  && !aarch64_page_has_low_reloc_at (cache, page_rel,
-						     address)))
-	    return false;
-	}
     }
 
   return true;
@@ -1629,6 +2105,8 @@ aarch64_build_auto_import_reloc_cache
 {
   int i;
 
+  cache->relocs = relocs;
+  cache->reloc_count = count;
   if (count <= 0)
     {
       cache->low_pages = NULL;
@@ -1696,16 +2174,18 @@ aarch64_validate_auto_import_reloc
     case IMAGE_REL_ARM64_PAGEBASE_REL21:
       if (!cache->page_has_low[index])
 	einfo (_("%F%P: %pB: AArch64 auto-import relocation pair "
-		 "against `%s' is malformed or unpaired\n"),
-	       section->owner, symbol_name);
+		 "against `%s' is malformed or unpaired at section "
+		 "offset 0x%V\n"),
+	       section->owner, symbol_name, rel->address);
       break;
 
     case IMAGE_REL_ARM64_PAGEOFFSET_12A:
     case IMAGE_REL_ARM64_PAGEOFFSET_12L:
       if (cache->low_pages[index] == NULL)
 	einfo (_("%F%P: %pB: AArch64 auto-import relocation pair "
-		 "against `%s' is malformed or unpaired\n"),
-	       section->owner, symbol_name);
+		 "against `%s' is malformed or unpaired at section "
+		 "offset 0x%V\n"),
+	       section->owner, symbol_name, rel->address);
       break;
 
     case IMAGE_REL_ARM64_REL21:
